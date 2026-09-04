@@ -69,15 +69,69 @@ body,
     border-left: 1px solid var(--border);
 }
 
+/* Streamlit moves the reopen control outside the sidebar when it is collapsed.
+   Keep both controls intentionally discoverable instead of relying on its faint
+   default header icon. */
+[data-testid="stSidebarCollapseButton"] > button,
+[data-testid="stSidebarCollapsedControl"] > button {
+    display: grid;
+    width: 42px;
+    height: 42px;
+    min-height: 42px;
+    place-items: center;
+    color: var(--text) !important;
+    background: var(--surface-elevated) !important;
+    border: 1px solid #40536a !important;
+    border-radius: 10px;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, .22);
+    opacity: 1 !important;
+}
+
+[data-testid="stSidebarCollapseButton"] > button:hover,
+[data-testid="stSidebarCollapsedControl"] > button:hover,
+[data-testid="stSidebarCollapseButton"] > button:focus-visible,
+[data-testid="stSidebarCollapsedControl"] > button:focus-visible {
+    color: #fff !important;
+    background: #21354f !important;
+    border-color: var(--primary) !important;
+    outline: 2px solid rgba(91, 140, 255, .6);
+    outline-offset: 2px;
+}
+
+[data-testid="stSidebarCollapsedControl"] {
+    position: fixed !important;
+    top: .8rem;
+    left: .8rem;
+    z-index: 1001;
+}
+
 [data-testid="stHeader"] {
     background: rgba(11, 15, 20, .96);
     border-bottom: 1px solid rgba(38, 51, 66, .55);
 }
 
-/* Keep the conference surface focused while preserving sidebar navigation. */
-[data-testid="stToolbar"],
+/* Keep the conference surface focused while preserving the native sidebar
+   reopen control, which Streamlit mounts inside its toolbar after collapse. */
+[data-testid="stToolbarActions"],
+[data-testid="stMainMenu"],
 [data-testid="stStatusWidget"] {
     display: none !important;
+}
+
+[data-testid="stHeader"] [data-testid="stBaseButton-header"],
+[data-testid="stHeader"] [data-testid="stBaseButton-headerNoPadding"]:not([data-testid="stMainMenuButton"]) {
+    display: grid;
+    width: 42px;
+    height: 42px;
+    min-height: 42px;
+    margin: .5rem .75rem;
+    place-items: center;
+    color: var(--text) !important;
+    background: var(--surface-elevated) !important;
+    border: 1px solid #40536a !important;
+    border-radius: 10px;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, .22);
+    opacity: 1 !important;
 }
 
 [data-testid="stSidebar"] [data-testid="stSidebarContent"] {
