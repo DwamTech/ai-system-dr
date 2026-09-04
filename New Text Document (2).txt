@@ -1,0 +1,126 @@
+import time
+from functools import lru_cache
+import hashlib
+from datetime import datetime, timedelta
+# التعديل للسرعة
+from langchain_community.embeddings import HuggingFaceEmbeddings 
+from langchain_community.vectorstores import OpenSearchVectorSearch
+from langchain_community.llms import Ollama
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnablePassthrough
+from langchain_core.output_parsers import StrOutputParser
+import streamlit as st
+
+class PerformanceMonitor:
+    def __init__(self):
+        self.metrics = {'indexing_time': [], 'query_time': []}
+        self.start_times = {}
+    def start_timer(self, operation): self.start_times[operation] = time.time()
+    def stop_timer(self, operation):
+        if operation in self.start_times:
+            duration = time.time() - self.start_times[operation]
+            self.metrics[operation].append({'value': duration})
+    def get_performance_report(self): return "تقرير الأداء متاح في السجلات"
+    def get_suggestions(self): return []
+
+class OptimizedRAGEngine:
+    def __init__(self, model_name="llama3", opensearch_url="http://opensearch:9200"):
+        self.model_name = model_name
+        self.opensearch_url = opensearch_url
+        self.index_name = "knowledge_base_optimized"
+        self._embeddings = None
+        self._llm = None
+        self._vectorstore_cache = None
+        self._query_cache = {}
+        self.monitor = PerformanceMonitor()
+        self.stats = {'total_queries': 0, 'total_documents': 0, 'cache_hits': 0}
+    
+    @property
+    def embeddings(self):
+        if self._embeddings is None:
+            # استخدام النموذج السريع جداً
+            self._embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+        return self._embeddings
+    
+    @property
+    def llm(self):
+        if self._llm is None:
+            self._llm = Ollama(model=self.model_name, base_url="http://ollama:11434")
+        return self._llm
+    
+    def get_vectorstore(self):
+        if self._vectorstore_cache: return self._vectorstore_cache
+        try:
+            self._vectorstore_cache = OpenSearchVectorSearch(
+                opensearch_url=self.opensearch_url,
+                index_name=self.index_name,
+                embedding_function=self.embeddings
+            )
+            return self._vectorstore_cache
+        except Exception as e:
+            st.error(f"خطأ VectorStore: {e}")
+            raise
+
+    def ingest_documents_bulk(self, all_chunks, batch_size=200):
+        if not all_chunks: return
+        self.monitor.start_timer('indexing_time')
+        combined_chunks = [c for chunk_list in all_chunks for c in chunk_list]
+        try:
+            OpenSearchVectorSearch.from_documents(
+                combined_chunks, self.embeddings, opensearch_url=self.opensearch_url, index_name=self.index_name, bulk_size=batch_size
+            )
+            self.stats['total_documents'] += len(combined_chunks)
+            self._vectorstore_cache = None 
+            self._query_cache.clear()
+        except Exception as e: st.error(f"فشل الفهرسة: {e}")
+        finally: self.monitor.stop_timer('indexing_time')
+
+    def clear_database(self):
+        try:
+            vs = self.get_vectorstore()
+            vs.client.indices.delete(index=self.index_name, ignore=[400, 404])
+            self._vectorstore_cache = None
+            return True
+        except: return False
+
+    def query_with_cache(self, query):
+        query_hash = hashlib.md5(query.encode()).hexdigest()
+        if query_hash in self._query_cache:
+            self.stats['cache_hits'] += 1
+            return self._query_cache[query_hash]
+        
+        chain, retriever = self.get_optimized_chain()
+        response = chain.invoke(query)
+        sources = retriever.invoke(query)
+        unique_sources = list(set([doc.metadata.get('source') for doc in sources]))
+        
+        result = (response, unique_sources)
+        self._query_cache[query_hash] = result
+        return result
+
+    def get_optimized_chain(self):
+        retriever = self.get_vectorstore().as_retriever(search_kwargs={"k": 5})
+        template = """أجب بناءً على السياق فقط. السياق: {context} السؤال: {question}"""
+        prompt = ChatPromptTemplate.from_template(template)
+        chain = (
+            {"context": retriever | self._format_docs, "question": RunnablePassthrough()}
+            | prompt | self.llm | StrOutputParser()
+        )
+        return chain, retriever
+
+    def _format_docs(self, docs):
+        return "\n\n".join([f"[المصدر: {d.metadata.get('source')}]\n{d.page_content}" for d in docs])
+
+    def generate_research_summary_optimized(self, text):
+        prompt = f"لخص هذا البحث في نقاط (الهدف، المنهج، النتائج): \n {text[:4000]}"
+        return self.llm.invoke(prompt)
+
+    def get_system_stats(self):
+        return self.stats
+    
+    def get_indexed_files(self):
+        try:
+            vs = self.get_vectorstore()
+            res = vs.client.search(index=self.index_name, body={"size": 0, "aggs": {"unique_sources": {"terms": {"field": "metadata.source.keyword", "size": 100}}}})
+            return [b['key'] for b in res['aggregations']['unique_sources']['buckets']]
+        except: return []

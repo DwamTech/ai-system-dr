@@ -1,0 +1,292 @@
+/* style.css - إصدار محسن */
+.paper-container {
+    background: linear-gradient(180deg, #f9f9f9 0%, #ffffff 100%);
+    border: 1px solid #e0e0e0;
+    border-radius: 10px;
+    padding: 20px;
+    margin: 10px 0;
+    font-family: 'Arial', sans-serif;
+    line-height: 1.6;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+    position: relative;
+}
+
+.paper-container::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 40px;
+    right: 0;
+    height: 1px;
+    background: repeating-linear-gradient(90deg,
+            transparent,
+            transparent 20px,
+            #e0e0e0 20px,
+            #e0e0e0 40px);
+}
+
+.button-wrapper {
+    margin: 10px 0;
+}
+
+.button {
+    display: inline-block;
+    padding: 12px 24px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    border-radius: 8px;
+    text-decoration: none;
+    font-weight: bold;
+    transition: all 0.3s ease;
+    border: none;
+    cursor: pointer;
+}
+
+.button:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+}
+
+.button-inner {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+/* تحسينات للـ typewriter */
+.typewriter {
+    width: 100%;
+    height: 200px;
+    position: relative;
+    margin: 20px auto;
+}
+
+/* تحسينات للـ pencil */
+.pencil {
+    width: 100px;
+    height: 100px;
+    margin: 20px auto;
+}
+
+/* تنسيق المقاييس */
+.metric-card {
+    background: white;
+    padding: 15px;
+    border-radius: 10px;
+    margin: 10px;
+    border-left: 5px solid #4CAF50;
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+}
+
+/* تنبيهات */
+.alert-success {
+    background: #d4edda;
+    color: #155724;
+    padding: 15px;
+    border-radius: 5px;
+    border: 1px solid #c3e6cb;
+}
+
+.alert-warning {
+    background: #fff3cd;
+    color: #856404;
+    padding: 15px;
+    border-radius: 5px;
+    border: 1px solid #ffeaa7;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   RTL Arabic Text Support - دعم النص العربي
+   ═══════════════════════════════════════════════════════════════ */
+
+/* Arabic text container */
+.arabic-text,
+.rtl-text {
+    direction: rtl;
+    text-align: right;
+    font-family: 'Tajawal', 'Cairo', 'IBM Plex Sans Arabic', 'Segoe UI', Tahoma, sans-serif;
+    line-height: 1.8;
+    unicode-bidi: bidi-override;
+}
+
+/* Mixed content (Arabic + English) */
+.mixed-content {
+    direction: rtl;
+    text-align: right;
+}
+
+.mixed-content .english-text {
+    direction: ltr;
+    display: inline-block;
+}
+
+/* Paper container with RTL */
+.paper-container-rtl {
+    background: linear-gradient(180deg, #f9f9f9 0%, #ffffff 100%);
+    border: 1px solid #e0e0e0;
+    border-radius: 10px;
+    padding: 20px;
+    margin: 10px 0;
+    font-family: 'Tajawal', 'Cairo', Arial, sans-serif;
+    line-height: 1.8;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+    direction: rtl;
+    text-align: right;
+}
+
+/* Mindmap container */
+.mindmap-container {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    padding: 20px;
+    border-radius: 15px;
+    color: white;
+    margin: 10px 0;
+}
+
+.mindmap-container h4 {
+    margin-top: 0;
+    color: white;
+}
+
+.mindmap-container ul {
+    margin: 0;
+    padding-right: 20px;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Dark Mode Support - الوضع الداكن (محسّن)
+   ═══════════════════════════════════════════════════════════════ */
+
+[data-theme="dark"] {
+    --bg-primary: #1a1a2e;
+    --bg-secondary: #16213e;
+    --bg-card: #0f3460;
+    --text-primary: #f5f5f5;
+    --text-secondary: #d0d0d0;
+    --accent: #e94560;
+    --border: #4a4a6c;
+}
+
+.dark-mode {
+    background-color: var(--bg-primary, #1a1a2e);
+    color: var(--text-primary, #f5f5f5);
+}
+
+.dark-mode .paper-container,
+.dark-mode .paper-container-rtl {
+    background: linear-gradient(180deg, #1e2a4a 0%, #0f1e3a 100%);
+    border-color: #4a4a6c;
+    color: #f5f5f5;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.4);
+}
+
+.dark-mode .metric-card {
+    background: #1e2a4a;
+    border-left-color: #e94560;
+    color: #f5f5f5;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.dark-mode .alert-success {
+    background: #1e4d2b;
+    color: #c0f5d0;
+    border-color: #2d6a3f;
+}
+
+.dark-mode .alert-warning {
+    background: #5a4d1e;
+    color: #f5e8c0;
+    border-color: #7a672d;
+}
+
+/* تحسين النصوص في الوضع الداكن */
+.dark-mode h1,
+.dark-mode h2,
+.dark-mode h3,
+.dark-mode h4,
+.dark-mode h5,
+.dark-mode h6 {
+    color: #ffffff;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+.dark-mode p,
+.dark-mode span,
+.dark-mode div {
+    color: #f5f5f5;
+}
+
+.dark-mode .stMarkdown {
+    color: #f5f5f5;
+}
+
+/* تحسين الأزرار في الوضع الداكن */
+.dark-mode button {
+    color: #ffffff;
+    border-color: #4a4a6c;
+}
+
+.dark-mode input,
+.dark-mode textarea,
+.dark-mode select {
+    background-color: #1e2a4a;
+    color: #f5f5f5;
+    border-color: #4a4a6c;
+}
+
+/* Export buttons */
+.export-btn {
+    display: inline-block;
+    padding: 8px 16px;
+    margin: 5px;
+    border-radius: 8px;
+    text-decoration: none;
+    font-weight: bold;
+    transition: all 0.3s ease;
+    cursor: pointer;
+    border: none;
+}
+
+.export-btn-json {
+    background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+    color: white;
+}
+
+.export-btn-mermaid {
+    background: linear-gradient(135deg, #fc4a1a 0%, #f7b733 100%);
+    color: white;
+}
+
+.export-btn-png {
+    background: linear-gradient(135deg, #8e2de2 0%, #4a00e0 100%);
+    color: white;
+}
+
+.export-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
+}
+
+/* Analysis section styling */
+.analysis-section {
+    background: #f8f9fa;
+    padding: 15px;
+    border-radius: 10px;
+    margin: 10px 0;
+    border-right: 4px solid #667eea;
+}
+
+.dark-mode .analysis-section {
+    background: #16213e;
+    border-right-color: #e94560;
+}
+
+/* Tab improvements */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 8px;
+}
+
+.stTabs [data-baseweb="tab"] {
+    border-radius: 8px 8px 0 0;
+    padding: 10px 20px;
+}

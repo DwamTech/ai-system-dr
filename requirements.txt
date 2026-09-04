@@ -1,0 +1,58 @@
+# المتطلبات الأساسية للمشروع
+# ================================
+
+# واجهة المستخدم
+streamlit>=1.32.0
+streamlit-mic-recorder>=0.0.8
+SpeechRecognition>=3.10.1
+
+# معالجة PDF
+PyPDF2>=3.0.0
+pypdf>=4.1.0
+pdf2image>=1.16.3
+pytesseract>=0.3.10
+pillow>=10.2.0
+python-multipart>=0.0.9
+
+# الذكاء الاصطناعي
+langchain>=0.1.12
+langchain-community>=0.0.28
+sentence-transformers>=2.5.1
+ollama>=0.1.7
+flashrank>=0.2.0
+chromadb>=0.4.24
+
+# الترجمة والتحليل (عشان التابات الجديدة تشتغل 🌐)
+deep-translator>=1.11.4
+spacy>=3.7.2
+textblob>=0.17.1
+sumy>=0.11.0
+
+# Arabic Text Processing (معالجة النصوص العربية)
+arabic-reshaper>=3.0.0
+python-bidi>=0.4.2
+
+# قاعدة البيانات
+opensearch-py>=2.5.0
+
+# أدوات عامة
+pandas>=2.2.0
+numpy>=1.26.4
+cachetools>=5.3.3
+
+# Visualization & Graphs (للخرائط الذهنية)
+networkx>=3.2.1
+plotly>=5.19.0
+matplotlib>=3.8.3
+
+# ===== NEW: Infrastructure Improvements =====
+# Redis Cache
+redis>=5.0.0
+
+# Retry Logic
+tenacity>=8.2.0
+
+# HTTP Requests (for health checks & SearXNG)
+requests>=2.31.0
+
+# ملاحظة: torch سيتم تثبيته تلقائياً مع sentence-transformers

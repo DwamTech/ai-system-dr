@@ -1,0 +1,39 @@
+# أسرار — لا ترفعهم أبداً
+.env
+*.env
+.env.*
+!.env.example
+
+# Docker backups
+docker_backups/
+DockerBackup/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Data
+data/
+stats/
+app_stats/
+logs/
+*.pdf
+
+# Docker/runtime data and large local backups
+opensearch_data/
+redis_data/
+ollama_data/
+*.vhdx
+ollama_data.tar.gz
+*.tar
+*.tar.gz
+
+# Generated local outputs and temporary uploads
+downloads/
+support_tickets/
+tmp/
+temp/

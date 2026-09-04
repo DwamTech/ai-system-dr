@@ -1,0 +1,48 @@
+# ── بيانات ضخمة لا تُنسخ للصورة ──
+ollama_data.tar.gz
+opensearch_data.tar.gz
+*.tar.gz
+*.tar
+*.zip
+
+# ── مجلدات Docker الداخلية ──
+DockerBackup/
+DockerDesktopWSL/
+دوكر\ البيانات/
+
+# ── Python cache ──
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ── بيئات Python ──
+.venv/
+venv/
+env/
+
+# ── ملفات IDE ──
+.vscode/
+.idea/
+
+# ── ملفات مؤقتة ──
+*.log
+*.tmp
+*.bak
+*.swp
+.DS_Store
+Thumbs.db
+
+# ── ملفات التطوير (اختبارات ومؤقتة) ──
+test_*.py
+diagnose_*.py
+fix_*.py
+
+# ── ملفات النهائي ──
+final_project/
+
+# ── المجلد الكبير ──
+NLP/
+
+# ── ملف البطارية ──
+battery-report.html

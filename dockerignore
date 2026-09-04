@@ -1,0 +1,6 @@
+pdfs/
+DockerData/
+opensearch-3.3.2-windows-x64/
+__pycache__/
+.git/
+venv/
