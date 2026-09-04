@@ -30,6 +30,7 @@ except ImportError:
 
 from processor_optimized import OptimizedDocumentProcessor
 from engine_optimized import OptimizedRAGEngine
+from indexing_jobs import indexing_jobs
 from utils import (
     get_scholar_link_cached,
     save_support_ticket_optimized,
@@ -191,6 +192,9 @@ if "tour_hold_step_once" not in st.session_state:
     st.session_state.tour_hold_step_once = False
 if "tour_pending_prompt" not in st.session_state:
     st.session_state.tour_pending_prompt = ""
+if "indexing_job_id" not in st.session_state:
+    query_job_id = st.query_params.get("index_job", "")
+    st.session_state.indexing_job_id = query_job_id if isinstance(query_job_id, str) else ""
 
 def load_indexed_files_from_db():
     """تحميل قائمة الملفات المفهرسة من قاعدة البيانات"""
@@ -518,6 +522,126 @@ def initialize_workspace():
     except Exception:
         st.session_state.rag_engine = None
         return False
+
+
+def _format_duration(seconds):
+    if seconds is None:
+        return "يُحسب بعد بدء مرحلة المعالجة"
+    seconds = max(0, int(seconds))
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours} س {minutes} د"
+    if minutes:
+        return f"{minutes} د {seconds} ث"
+    return f"{seconds} ث"
+
+
+def _attach_completed_indexing_job(status):
+    """Reconnect a refreshed browser session to its completed background job."""
+    if status.get("state") != "completed":
+        return
+    engine = indexing_jobs.get_engine(status.get("id"))
+    if engine is not None:
+        st.session_state.rag_engine = engine
+    indexed_names = status.get("indexed_files", [])
+    if indexed_names:
+        st.session_state.indexed_files = list(dict.fromkeys(
+            st.session_state.indexed_files + indexed_names
+        ))
+        for name in indexed_names:
+            st.session_state.last_full_text.setdefault(
+                name, "[ملف مفهرس سابقاً - اضغط لتحميل المحتوى]"
+            )
+    st.session_state.tour_index_completed = True
+    st.session_state.tour_index_error = False
+
+
+def render_indexing_job_status():
+    """Show durable job state and poll it without rerunning the whole app."""
+    job_id = st.session_state.get("indexing_job_id", "")
+    if not job_id:
+        return
+
+    def draw_status():
+        status = indexing_jobs.get_status(job_id)
+        if not status:
+            st.warning("لم تعد حالة مهمة الفهرسة متاحة. يمكنك بدء مهمة جديدة من الملفات المرفوعة.")
+            return
+        state = status.get("state", "queued")
+        progress = int(status.get("progress", 0))
+        if state in {"queued", "running"}:
+            st.progress(progress, text=f"{progress}% — {status.get('phase', 'جاري التحضير')}")
+            st.caption(status.get("message", "تعمل المهمة في الخلفية."))
+            details = [f"الوقت المنقضي: {_format_duration(status.get('elapsed_seconds'))}"]
+            if status.get("eta_seconds") is not None:
+                details.append(f"المتبقي التقريبي: {_format_duration(status.get('eta_seconds'))}")
+            active_file = status.get("active_file")
+            if active_file:
+                details.append(f"الملف الحالي: {active_file}")
+            completed = status.get("completed_files", 0)
+            total = status.get("total_files", 0)
+            if total:
+                details.append(f"الملفات المكتملة: {completed}/{total}")
+            st.caption(" · ".join(details))
+            st.info("الفهرسة مستمرة حتى عند تحديث الصفحة. لا تغلق خدمة التطبيق أثناء التنفيذ.")
+        elif state == "completed":
+            _attach_completed_indexing_job(status)
+            st.success(status.get("message", "اكتملت الفهرسة بنجاح."))
+            if status.get("failed_files"):
+                st.warning("لم تُفهرس بعض الملفات: " + "، ".join(status["failed_files"]))
+        elif state == "interrupted":
+            st.warning(status.get("message", "توقفت مهمة الفهرسة."))
+        else:
+            st.error(status.get("message", "تعذر إكمال الفهرسة."))
+            st.session_state.tour_index_error = True
+
+    if hasattr(st, "fragment"):
+        @st.fragment(run_every="2s")
+        def live_status_fragment():
+            draw_status()
+        live_status_fragment()
+    else:
+        draw_status()
+
+
+def start_background_indexing(uploaded_files):
+    valid_files = []
+    rejected_files = []
+    for uploaded_file in uploaded_files:
+        is_valid, validation_message = validate_pdf_file(uploaded_file)
+        if is_valid:
+            valid_files.append((uploaded_file.name, uploaded_file.getvalue()))
+        else:
+            rejected_files.append(f"{uploaded_file.name}: {validation_message}")
+    if not valid_files:
+        st.session_state.tour_index_error = True
+        st.error("لم يوجد ملف PDF صالح للفهرسة. تحقق من الملفات ثم حاول مرة أخرى.")
+        return
+    if rejected_files:
+        st.warning("لم تُقبل بعض الملفات: " + "، ".join(rejected_files))
+    configured_mode = st.session_state.processing_mode
+    parallel = configured_mode == "متوازي" or (
+        configured_mode == "تلقائي" and len(valid_files) > 1
+    )
+    try:
+        job_id = indexing_jobs.start_job(
+            valid_files,
+            chunk_size=st.session_state.chunk_size,
+            chunk_overlap=st.session_state.chunk_overlap,
+            batch_size=st.session_state.batch_size,
+            force_ocr=st.session_state.force_ocr,
+            parallel=parallel,
+            model_name=st.session_state.selected_model,
+        )
+    except RuntimeError:
+        st.info("هناك مهمة فهرسة أخرى تعمل الآن. تابع نسبة التقدم الظاهرة قبل بدء مهمة جديدة.")
+        return
+    st.session_state.indexing_job_id = job_id
+    st.session_state.tour_index_error = False
+    st.session_state.tour_index_completed = False
+    st.query_params["index_job"] = job_id
+    st.rerun()
 
 
 def render_product_header():
@@ -866,6 +990,9 @@ with st.sidebar:
         st.caption("● مساحة العمل جاهزة")
     else:
         st.caption("○ ستُجهّز مساحة العمل عند الفهرسة")
+
+    with st.container(key="indexing_job_status"):
+        render_indexing_job_status()
     
     # --- رفع الملفات ---
     st.markdown("### المستندات")
@@ -919,7 +1046,20 @@ with st.sidebar:
             )
         force_ocr = st.session_state.force_ocr
     
-    if uploaded_files and st.button("بدء الفهرسة", type="primary", icon=":material/auto_awesome_motion:", use_container_width=True, key="tour_target_index"):
+    indexing_is_running = indexing_jobs.has_running_job()
+    if uploaded_files and st.button(
+        "الفهرسة جارية في الخلفية" if indexing_is_running else "بدء الفهرسة",
+        type="primary",
+        icon=":material/hourglass_top:" if indexing_is_running else ":material/auto_awesome_motion:",
+        use_container_width=True,
+        key="tour_target_index_background",
+        disabled=indexing_is_running,
+    ):
+        start_background_indexing(uploaded_files)
+
+    # Emergency compatibility fallback, deliberately disabled in the normal
+    # deployment. The durable background path above is the supported flow.
+    if os.getenv("ENABLE_LEGACY_SYNCHRONOUS_INDEXING") == "1":
         st.session_state.tour_index_error = False
         if not st.session_state.rag_engine:
             with st.spinner("جاري تجهيز مساحة العمل..."):

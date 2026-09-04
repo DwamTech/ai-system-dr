@@ -182,6 +182,22 @@ body,
     margin-top: 1.25rem;
 }
 
+.st-key-indexing_job_status {
+    margin: .8rem 0;
+    padding: .75rem;
+    background: rgba(91, 140, 255, .06);
+    border: 1px solid rgba(91, 140, 255, .28);
+    border-radius: var(--radius-md);
+}
+
+body:has(.tour-step-2) .st-key-indexing_job_status {
+    position: relative;
+    z-index: 1002;
+    background: var(--surface-elevated);
+    border-color: var(--primary);
+    box-shadow: 0 0 0 7px rgba(91, 140, 255, .14), 0 12px 28px rgba(0, 0, 0, .28);
+}
+
 .product-header {
     padding: .75rem 0 .4rem;
 }

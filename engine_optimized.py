@@ -66,12 +66,13 @@ class PerformanceMonitor:
 class OptimizedRAGEngine:
     QUERY_CACHE_VERSION = 2
 
-    def __init__(self, model_name: str | None = None):
+    def __init__(self, model_name: str | None = None, report_errors: bool = True):
         self.opensearch_url = os.getenv("OPENSEARCH_URL", "http://opensearch:9200")
         self.model_name     = model_name or os.getenv(
             "OPENROUTER_MODEL", "qwen/qwen3-30b-a3b-instruct-2507"
         )
         self.index_name     = "knowledge_base_optimized_v2"
+        self.report_errors  = report_errors
 
         self._embeddings         = None
         self._llm                = None
@@ -195,19 +196,23 @@ class OptimizedRAGEngine:
             return vectorstore
         except Exception as e:
             logger.error(f"فشل الاتصال بـ OpenSearch: {e}")
-            st.error("تعذر الاتصال بخدمة الفهرسة. تحقق من تشغيلها ثم حاول مرة أخرى.")
+            if self.report_errors:
+                st.error("تعذر الاتصال بخدمة الفهرسة. تحقق من تشغيلها ثم حاول مرة أخرى.")
             raise
 
     # ── Ingest ───────────────────────────────────────────
-    def ingest_documents_bulk(self, all_chunks, batch_size: int = 500) -> bool:
+    def ingest_documents_bulk(self, all_chunks, batch_size: int = 500, progress_callback=None) -> bool:
         if not all_chunks:
             return False
         self.monitor.start_timer("indexing_time")
         combined = [c for lst in all_chunks for c in lst]
         try:
             vs = self.get_vectorstore()
+            total_chunks = len(combined)
             for i in range(0, len(combined), batch_size):
                 vs.add_documents(combined[i:i + batch_size])
+                if progress_callback:
+                    progress_callback(min(i + batch_size, total_chunks), total_chunks)
             self.stats["total_documents"] += len(combined)
             self._save_stats()
             if self._query_cache:
@@ -216,7 +221,8 @@ class OptimizedRAGEngine:
             return True
         except Exception as e:
             logger.error(f"فشل الفهرسة: {e}")
-            st.error("تعذر إكمال الفهرسة في الوقت الحالي.")
+            if self.report_errors:
+                st.error("تعذر إكمال الفهرسة في الوقت الحالي.")
             return False
         finally:
             self.monitor.stop_timer("indexing_time")

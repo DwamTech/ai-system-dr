@@ -38,6 +38,7 @@ RUN python -m spacy download xx_ent_wiki_sm
 # ── 7. نسخ ملفات المشروع ─────────────────────────────
 COPY processor_optimized.py .
 COPY engine_optimized.py .
+COPY indexing_jobs.py .
 COPY openrouter_client.py .
 COPY research_extractor.py .
 COPY utils.py .
