@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 from collections import Counter
 import io
 import requests
+import html
 
 if "current_text" not in st.session_state:
     st.session_state.current_text = ""
@@ -81,11 +82,12 @@ except ImportError:
 # 0. إعداد الصفحة والتصميم
 # ==========================================
 st.set_page_config(
-    page_title="NLP Academic Search Engine - Optimized",
+    page_title="مساحة البحث الأكاديمي الذكية",
     layout="wide",
-    page_icon="🎓",
-    initial_sidebar_state="expanded"
+    page_icon="◈",
+    initial_sidebar_state="auto"
 )
+st.set_option("client.toolbarMode", "viewer")
 
 # تحميل الـ CSS
 def local_css(file_name):
@@ -157,6 +159,18 @@ if "chunk_size" not in st.session_state:
     st.session_state.chunk_size = 2000
 if "chunk_overlap" not in st.session_state:
     st.session_state.chunk_overlap = 300
+if "selected_model" not in st.session_state:
+    st.session_state.selected_model = os.getenv(
+        "OPENROUTER_MODEL", "qwen/qwen3-30b-a3b-instruct-2507"
+    )
+if "batch_size" not in st.session_state:
+    st.session_state.batch_size = 500
+if "enable_cache" not in st.session_state:
+    st.session_state.enable_cache = True
+if "processing_mode" not in st.session_state:
+    st.session_state.processing_mode = "تلقائي"
+if "force_ocr" not in st.session_state:
+    st.session_state.force_ocr = False
 
 def load_indexed_files_from_db():
     """تحميل قائمة الملفات المفهرسة من قاعدة البيانات"""
@@ -466,201 +480,208 @@ def analyze_text_in_chunks(text, prompt_template, rag_engine, max_words_per_chun
 # 3. الواجهة الرئيسية
 # ==========================================
 
+# --- UI helpers ---
+MODEL_LABELS = {
+    "qwen/qwen3-30b-a3b-instruct-2507": "Qwen 3 — متوازن",
+}
+
+
+def initialize_workspace():
+    """تهيئة المحرك من الواجهة دون تغيير سلوكه أو إعدادات الاسترجاع."""
+    try:
+        engine = OptimizedRAGEngine(model_name=st.session_state.selected_model)
+        engine.get_vectorstore()
+        st.session_state.rag_engine = engine
+        st.session_state.db_files_loaded = False
+        load_indexed_files_from_db()
+        return True
+    except Exception:
+        st.session_state.rag_engine = None
+        return False
+
+
+def render_product_header():
+    st.markdown(
+        """
+        <section class="product-header" dir="rtl">
+            <div class="product-kicker">مساحة بحث مدعومة بالذكاء الاصطناعي</div>
+            <h1>محرك البحث الأكاديمي الذكي</h1>
+            <p>ابحث، حلّل، ولخّص مستنداتك بوضوح وفي مكان واحد.</p>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_workflow_steps(uploaded_files):
+    has_uploaded = bool(uploaded_files)
+    has_indexed = bool(st.session_state.indexed_files or st.session_state.last_full_text)
+    current_step = 4 if has_indexed else 2 if has_uploaded else 1
+    labels = ["رفع المستند", "الفهرسة", "اختيار النطاق", "استخدام الأدوات"]
+    steps = []
+    for number, label in enumerate(labels, 1):
+        state = "is-complete" if number < current_step else "is-active" if number == current_step else ""
+        steps.append(
+            f'<div class="workflow-step {state}"><span>{number}</span><small>{label}</small></div>'
+        )
+    st.markdown(
+        f'<div class="workflow-steps" dir="rtl">{"".join(steps)}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_document_context():
+    active_label = html.escape(st.session_state.active_document or "كل المستندات")
+    state_label = "جاهز للتحليل" if st.session_state.rag_engine else "يحتاج إلى تهيئة"
+    st.markdown(
+        f"""
+        <div class="document-context" dir="rtl">
+            <div><span>نطاق العمل الحالي</span><strong>{active_label}</strong></div>
+            <b>{state_label}</b>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+@st.dialog("الإعدادات", width="large")
+def show_settings_dialog():
+    st.markdown("### نموذج الذكاء الاصطناعي")
+    configured_model = os.getenv("OPENROUTER_MODEL", "qwen/qwen3-30b-a3b-instruct-2507")
+    model_options = list(dict.fromkeys([st.session_state.selected_model, configured_model]))
+    st.selectbox(
+        "النموذج النشط",
+        model_options,
+        key="selected_model",
+        format_func=lambda slug: MODEL_LABELS.get(slug, slug),
+        help="يظهر الاسم التقني هنا فقط لأغراض الإعداد.",
+    )
+
+    st.markdown("### معالجة المستندات")
+    setting_col1, setting_col2 = st.columns(2)
+    with setting_col1:
+        processing_mode = st.selectbox(
+            "طريقة المعالجة",
+            ["تلقائي", "متسلسل", "متوازي"],
+            index=["تلقائي", "متسلسل", "متوازي"].index(st.session_state.processing_mode),
+        )
+        chunk_size = st.slider(
+            "حجم الجزء النصي", 800, 2000, value=st.session_state.chunk_size, step=100
+        )
+        chunk_overlap = st.slider(
+            "تداخل الأجزاء", 50, 300, value=st.session_state.chunk_overlap, step=10
+        )
+    with setting_col2:
+        batch_size = st.slider(
+            "حجم دفعة الفهرسة", 100, 500, value=st.session_state.batch_size, step=50
+        )
+        force_ocr = st.toggle("استخدام OCR إجبارياً", value=st.session_state.force_ocr)
+        enable_cache = st.toggle("تفعيل التخزين المؤقت", value=st.session_state.enable_cache)
+
+    st.markdown("### النظام")
+    status_col, action_col = st.columns([2, 1])
+    with status_col:
+        state = "جاهزة" if st.session_state.rag_engine else "غير مهيأة"
+        st.write(f"حالة مساحة العمل: **{state}**")
+    with action_col:
+        if st.button("تهيئة الآن", use_container_width=True):
+            with st.spinner("جاري تجهيز مساحة العمل..."):
+                if initialize_workspace():
+                    st.success("مساحة العمل جاهزة.")
+                    st.rerun()
+                else:
+                    st.error("تعذر تجهيز مساحة العمل. حاول مرة أخرى.")
+
+    with st.expander("تشخيص الخدمات"):
+        if st.button("تشغيل الفحص", use_container_width=True):
+            if not st.session_state.rag_engine:
+                st.warning("هيّئ مساحة العمل أولاً.")
+            else:
+                health = st.session_state.rag_engine.check_services_health()
+                st.write("OpenRouter", "متصل" if health["provider"]["status"] else "غير متصل")
+                st.write("OpenSearch", "متصل" if health["opensearch"]["status"] else "غير متصل")
+                st.write("Redis", health["redis"]["message"])
+                try:
+                    sx_resp = requests.get("http://searxng:8080/healthz", timeout=3)
+                    sx_ok = sx_resp.status_code == 200
+                except Exception:
+                    sx_ok = False
+                st.write("SearXNG", "متصل" if sx_ok else "غير متصل")
+
+    with st.expander("خيارات متقدمة وخطرة"):
+        if st.button("مسح الذاكرة المؤقتة", use_container_width=True):
+            if st.session_state.rag_engine:
+                st.session_state.rag_engine._query_cache.clear()
+                st.session_state.rag_engine._metadata_cache.clear()
+                st.success("تم مسح الذاكرة المؤقتة.")
+        confirm_clear = st.checkbox("أفهم أن مسح الفهرس لا يمكن التراجع عنه")
+        if st.button("مسح فهرس المستندات", type="primary", disabled=not confirm_clear, use_container_width=True):
+            if st.session_state.rag_engine and st.session_state.rag_engine.clear_database():
+                st.session_state.indexed_files = []
+                st.session_state.active_document = None
+                st.success("تم مسح الفهرس.")
+        if st.button("عرض تقرير الأداء", use_container_width=True):
+            if st.session_state.rag_engine and hasattr(st.session_state.rag_engine, "monitor"):
+                st.markdown(st.session_state.rag_engine.monitor.get_performance_report())
+
+    if st.button("حفظ وإغلاق", type="primary", use_container_width=True):
+        st.session_state.processing_mode = processing_mode
+        st.session_state.chunk_size = chunk_size
+        st.session_state.chunk_overlap = chunk_overlap
+        st.session_state.batch_size = batch_size
+        st.session_state.force_ocr = force_ocr
+        st.session_state.enable_cache = enable_cache
+        st.rerun()
+
+
+@st.dialog("الأرشيف")
+def show_archive_dialog():
+    if not st.session_state.rag_engine:
+        st.info("هيّئ مساحة العمل لعرض المستندات المحفوظة.")
+        return
+    files = st.session_state.rag_engine.get_indexed_files()
+    if not files:
+        st.info("لا توجد مستندات مفهرسة بعد.")
+        return
+    search_term = st.text_input("ابحث باسم المستند", placeholder="اسم المستند...")
+    filtered_files = [f for f in files if search_term.lower() in f.lower()]
+    st.caption(f"{len(filtered_files)} مستند")
+    for filename in filtered_files[:20]:
+        st.write(f"📄 {filename}")
+
+
+@st.dialog("المساعدة والدعم")
+def show_support_dialog():
+    st.markdown("ارفع ملفات PDF، ابدأ الفهرسة، اختر نطاق العمل، ثم استخدم المحادثة أو إحدى الأدوات.")
+    with st.form("support_form_optimized"):
+        rating = st.select_slider("تقييم التجربة", options=[1, 2, 3, 4, 5], value=5)
+        name = st.text_input("الاسم (اختياري)")
+        email = st.text_input("البريد الإلكتروني (اختياري)")
+        query_type = st.selectbox("نوع الرسالة", ["تقييم عام", "مشكلة تقنية", "اقتراح تحسين", "استفسار آخر"])
+        msg = st.text_area("رسالتك", height=100)
+        if st.form_submit_button("إرسال", use_container_width=True):
+            save_support_ticket_optimized(name, email, query_type, msg, rating)
+            st.success("شكراً لك. تم حفظ رسالتك.")
+
+
 # --- Sidebar ---
 with st.sidebar:
-    st.image("https://cdn-icons-png.flaticon.com/512/3135/3135715.png", width=60)
-    st.markdown("### ⚙️ لوحة التحكم المحسنة")
-    
-    st.caption("الموفر: OpenRouter")
-    with st.expander("🧠 إعدادات الذكاء المتقدمة", expanded=False):
-        configured_model = os.getenv("OPENROUTER_MODEL", "qwen/qwen3-30b-a3b-instruct-2507")
-        model = st.selectbox(
-            "النموذج",
-            list(dict.fromkeys([configured_model, "qwen/qwen3-30b-a3b-instruct-2507"])),
-            help="يستخدم التطبيق نموذج OpenRouter المختار لجميع ميزات التوليد.",
-        )
-    
-    # إعدادات متقدمة
-    with st.expander("⚡ الإعدادات المتقدمة"):
-        chunk_size = st.slider("حجم الـ Chunk", 800, 2000, 2000, 100)
-        chunk_overlap = st.slider("تداخل الـ Chunks", 50, 300, 300, 10)
-        enable_cache = st.toggle("تفعيل الـ Cache", value=True)
-        batch_size = st.slider("حجم الدفعة", 100, 500, 500, 50)
-        
-        # Dark Mode
-        st.markdown("---")
-        dark_mode = st.toggle("🌙 الوضع الداكن", value=False)
-        if dark_mode:
-            st.markdown("""
-            <script>
-                document.body.classList.add('dark-mode');
-            </script>
-            <style>
-                .stApp { background-color: #1a1a2e !important; color: #eaeaea !important; }
-                .stSidebar { background-color: #16213e !important; }
-            </style>
-            """, unsafe_allow_html=True)
-    
-    # تفعيل المحرك
-    if st.button("🔌 تفعيل المحرك المحسن", type="primary", use_container_width=True):
-        with st.spinner("🚀 جاري تهيئة المحرك المحسن..."):
-            try:
-                # إنشاء المحرك مع الإعدادات المخصصة
-                st.session_state.rag_engine = OptimizedRAGEngine(model_name=model)
-                
-                # اختبار الاتصال
-                test_vs = st.session_state.rag_engine.get_vectorstore()
-                doc_count = st.session_state.rag_engine.get_document_count()
-                
-                st.success(f"✅ تم الاتصال بنجاح")
-                st.info(f"📊 قاعدة البيانات تحتوي على {doc_count} مستند")
-                
-                # تخزين الإعدادات
-                st.session_state.chunk_size = chunk_size
-                st.session_state.chunk_overlap = chunk_overlap
-                
-                # تحميل الملفات المفهرسة من قاعدة البيانات
-                if load_indexed_files_from_db():
-                    st.success(f"📂 تم تحميل {len(st.session_state.indexed_files)} ملف مفهرس")
-                
-            except Exception:
-                st.error("تعذر تفعيل المحرك. تحقق من خدمات الفهرسة ثم حاول مرة أخرى.")
-                st.session_state.rag_engine = None
-    
-    # --- فحص صحة النظام ---
-    if st.button("🔍 فحص النظام", use_container_width=True):
-        if st.session_state.rag_engine:
-            with st.spinner("جاري فحص الخدمات..."):
-                health = st.session_state.rag_engine.check_services_health()
-                
-                st.markdown("#### 🏥 حالة النظام")
-                
-                provider_icon = "✅" if health['provider']['status'] else "❌"
-                st.write(f"{provider_icon} **OpenRouter**: {health['provider']['message']}")
-                st.caption(f"النموذج: {health['provider']['model']}")
-                
-                # OpenSearch
-                os_icon = "✅" if health['opensearch']['status'] else "❌"
-                st.write(f"{os_icon} **OpenSearch**: {health['opensearch']['message']}")
-                if health['opensearch']['doc_count'] > 0:
-                    st.caption(f"   المستندات: {health['opensearch']['doc_count']}")
-                
-                # Redis
-                rd_icon = "✅" if health['redis']['status'] else "⚠️"
-                st.write(f"{rd_icon} **Cache ({health['redis']['backend']})**: {health['redis']['message']}")
-                
-                # SearXNG
-                try:
-                    sx_resp = requests.get("http://localhost:8888/healthz", timeout=3)
-                    sx_ok = sx_resp.status_code == 200
-                except:
-                    try:
-                        sx_resp = requests.get("http://searxng:8080/healthz", timeout=3)
-                        sx_ok = sx_resp.status_code == 200
-                    except:
-                        sx_ok = False
-                sx_icon = "✅" if sx_ok else "⚠️"
-                st.write(f"{sx_icon} **SearXNG**: {'متاح' if sx_ok else 'غير متاح (اختياري)'}")
-        else:
-            st.warning("فعّل المحرك أولاً")
-    
-    st.divider()
-    
-    # --- دليل الاستخدام التفاعلي ---
-    with st.expander("📖 دليل الاستخدام السريع"):
-        st.markdown("""
-        ### 🚀 خطوات استخدام المحرك
-        
-        **1️⃣ تفعيل المحرك**
-        - اضغط على زر "🔌 تفعيل المحرك المحسن" أعلاه
-        - انتظر حتى يتم الاتصال بقاعدة البيانات
-        
-        **2️⃣ رفع المستندات**
-        - اختر ملفات PDF من جهازك
-        - يمكنك رفع عدة ملفات مرة واحدة
-        
-        **3️⃣ الفهرسة**
-        - اضغط على زر "🚀 بدء الفهرسة المحسنة"
-        - اختر طريقة المعالجة (متسلسل أو متوازي)
-        - انتظر حتى اكتمال الفهرسة
-        
-        **4️⃣ البحث والاستعلام**
-        - استخدم حقل البحث النصي أو التسجيل الصوتي
-        - اطرح أسئلتك بالعربية أو الإنجليزية
-        - احصل على إجابات دقيقة من المستندات
-        
-        ---
-        
-        💡 **نصائح:**
-        - استخدم أسئلة محددة للحصول على نتائج أفضل
-        - يمكنك تحميل النتائج بصيغة PDF أو Word
-        - جرّب الخرائط الذهنية لفهم أعمق للمحتوى
-        """)
-    
-    # --- الخصوصية والأمان ---
-    with st.expander("🔒 الخصوصية والأمان"):
-        st.markdown("""
-        ### ✅ مستنداتك في أمان تام
-        
-        **🏠 محلي بالكامل:**
-        - المحرك يعمل على جهازك فقط
-        - لا يتم إرسال أي بيانات للإنترنت
-        - جميع المستندات محفوظة محلياً
-        
-        **🔐 الخصوصية:**
-        - لا يمكن لأحد الوصول لمستنداتك إلا أنت
-        - البيانات لا تغادر جهازك أبداً
-        - لا توجد خوادم خارجية
-        
-        **🌐 المشاركة الآمنة:**
-        - يمكنك مشاركة المحرك على شبكتك المحلية فقط
-        - الأشخاص على نفس الشبكة يمكنهم الوصول
-        - لحماية أكبر: لا تشارك على شبكات عامة
-        
-        **💾 النسخ الاحتياطي:**
-        - استخدم سكريبتات النسخ الاحتياطي المرفقة
-        - احفظ بياناتك بانتظام
-        - يمكنك نقل البيانات عبر USB
-        
-        ---
-        
-        🛡️ **خلاصة:** محركك آمن تماماً للاستخدام الشخصي والمهني!
-        """)
-    
-    st.divider()
-    
-    # --- إدارة الأرشيف ---
-    st.markdown("### 🗂️ الأرشيف المحسن")
+    st.markdown(
+        """
+        <div class="sidebar-brand" dir="rtl">
+            <span>◈</span>
+            <div><strong>باحث</strong><small>مساحة أكاديمية ذكية</small></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     if st.session_state.rag_engine:
-        # زر تحديث الأرشيف
-        if st.button("🔄 تحديث قائمة الملفات", use_container_width=True):
-            st.rerun()
-        
-        files = st.session_state.rag_engine.get_indexed_files()
-        if files:
-            st.write(f"**عدد الملفات:** {len(files)}")
-            
-            # فلترة الملفات
-            search_term = st.text_input("🔍 بحث في الملفات:", placeholder="اسم الملف...")
-            filtered_files = [f for f in files if search_term.lower() in f.lower()]
-            
-            for f in filtered_files[:10]:  # عرض أول 10 ملفات فقط
-                link = get_scholar_link_cached(f)
-                col1, col2 = st.columns([3, 1])
-                with col1:
-                    st.markdown(f"📄 {f}")
-                with col2:
-                    st.markdown(f"[🔗]({link})", help="فتح في Google Scholar")
-            
-            if len(filtered_files) > 10:
-                st.caption(f"عرض 10 من {len(filtered_files)} ملف")
-        else:
-            st.caption("لا توجد ملفات مفهرسة بعد")
-    
-    st.divider()
+        st.caption("● مساحة العمل جاهزة")
+    else:
+        st.caption("○ ستُجهّز مساحة العمل عند الفهرسة")
     
     # --- رفع الملفات ---
-    st.markdown("### 📤 رفع الملفات للفهرسة")
+    st.markdown("### المستندات")
     
     available_documents = list(dict.fromkeys(
         list(st.session_state.indexed_files) + list(st.session_state.last_full_text.keys())
@@ -681,15 +702,15 @@ with st.sidebar:
             None if selected_document == "كل المستندات" else selected_document
         )
         if st.session_state.active_document:
-            st.success(f"المستند النشط: {st.session_state.active_document}")
+            st.caption(f"جاهز للتحليل: {st.session_state.active_document}")
     else:
-        st.info("الخطوة 1: ارفع ملفات PDF ثم فهرسها لاختيار مستند نشط.")
+        st.caption("ابدأ برفع ملف PDF أو أكثر.")
 
     uploaded_files = st.file_uploader(
-        "اختر ملفات PDF",
+        "ارفع المستندات",
         type=["pdf"],
         accept_multiple_files=True,
-        help="يمكنك رفع عدة ملفات مرة واحدة"
+        help="يمكنك رفع عدة ملفات PDF مرة واحدة"
     )
     
     if uploaded_files:
@@ -697,18 +718,23 @@ with st.sidebar:
         total_size = sum(f.size for f in uploaded_files)
         st.caption(f"📊 {len(uploaded_files)} ملف | الحجم الإجمالي: {format_file_size(total_size)}")
         
-        # اختيار تلقائي لطريقة المعالجة بناءً على عدد الملفات
-        # ملف واحد كبير → متسلسل ؛ ملفات متعددة → متوازي
-        auto_index = 0 if len(uploaded_files) == 1 else 1
-        process_method = st.radio(
-            "طريقة المعالجة:",
-            ["🔢 متسلسل (مناسب لملفات كبيرة)", "⚡ متوازي (مناسب لملفات متعددة)"],
-            index=auto_index
-        )
-        
-        force_ocr = st.toggle("🔍 استخدام تقنية OCR (إجبارياً للملفات العربية لتجنب الرموز المشفرة)", value=False)
+        configured_mode = st.session_state.processing_mode
+        if configured_mode == "متسلسل":
+            process_method = "🔢 متسلسل (مناسب لملفات كبيرة)"
+        elif configured_mode == "متوازي":
+            process_method = "⚡ متوازي (مناسب لملفات متعددة)"
+        else:
+            process_method = (
+                "🔢 متسلسل (مناسب لملفات كبيرة)"
+                if len(uploaded_files) == 1
+                else "⚡ متوازي (مناسب لملفات متعددة)"
+            )
+        force_ocr = st.session_state.force_ocr
     
-    if uploaded_files and st.button("🚀 بدء الفهرسة المحسنة", type="primary", use_container_width=True):
+    if uploaded_files and st.button("بدء الفهرسة", type="primary", use_container_width=True):
+        if not st.session_state.rag_engine:
+            with st.spinner("جاري تجهيز مساحة العمل..."):
+                initialize_workspace()
         if st.session_state.rag_engine:
             valid_files = []
             rejected_files = []
@@ -820,7 +846,7 @@ with st.sidebar:
                 # فهرسة جميع النتائج معاً
                 info_placeholder.info("📊 جاري فهرسة النتائج في قاعدة البيانات...")
                 indexing_succeeded = st.session_state.rag_engine.ingest_documents_bulk(
-                    all_results, batch_size=batch_size
+                    all_results, batch_size=st.session_state.batch_size
                 )
                 if not indexing_succeeded:
                     raise RuntimeError("Indexing did not complete")
@@ -863,99 +889,40 @@ with st.sidebar:
                 st.error("تعذر إكمال الفهرسة. تحقق من اتصال خدمة الفهرسة ومن صحة ملفات PDF ثم حاول مرة أخرى.")
                 placeholder.empty()
     
-    st.divider()
-    
-    # --- إدارة النظام ---
-    with st.expander("🛠️ إدارة النظام"):
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            if st.button("🧹 مسح الـ Cache", use_container_width=True):
-                if st.session_state.rag_engine:
-                    st.session_state.rag_engine._query_cache.clear()
-                    st.session_state.rag_engine._metadata_cache.clear()
-                    st.success("تم مسح الـ Cache")
-        
-        with col2:
-            if st.button("🗑️ مسح قاعدة البيانات", use_container_width=True):
-                if st.session_state.rag_engine:
-                    if st.session_state.rag_engine.clear_database():
-                        st.success("تم مسح قاعدة البيانات")
-                        st.rerun()
-        
-        # زر عرض تقرير الأداء
-        if st.button("📈 عرض تقرير الأداء", use_container_width=True):
-            if st.session_state.rag_engine and hasattr(st.session_state.rag_engine, 'monitor'):
-                report = st.session_state.rag_engine.monitor.get_performance_report()
-                st.markdown(report)
-    
-    st.divider()
-    
-    # --- الدعم والتقييم ---
-    with st.expander("📬 الدعم والتقييم المحسن"):
-        with st.form("support_form_optimized"):
-            st.write("رأيك يساعدنا على التحسين:")
-            
-            rating = st.select_slider(
-                "تقييم النظام:",
-                options=[1, 2, 3, 4, 5],
-                value=5,
-                format_func=lambda x: "⭐" * x
-            )
-            
-            name = st.text_input("الاسم (اختياري)")
-            email = st.text_input("البريد الإلكتروني (اختياري)")
-            
-            query_type = st.selectbox(
-                "نوع الاستفسار:",
-                ["تقييم عام", "مشكلة تقنية", "اقتراح تحسين", "استفسار آخر"]
-            )
-            
-            msg = st.text_area("رسالتك:", height=100)
-            
-            submitted = st.form_submit_button("📤 إرسال التقييم")
-            if submitted:
-                save_support_ticket_optimized(name, email, query_type, msg, rating)
-                st.success("شكراً لك! تم حفظ تقييمك بنجاح.")
-                st.balloons()
+    st.markdown('<div class="sidebar-spacer"></div>', unsafe_allow_html=True)
+    if st.button("الإعدادات", use_container_width=True):
+        show_settings_dialog()
+    if st.button("الأرشيف", use_container_width=True):
+        show_archive_dialog()
+    if st.button("المساعدة", use_container_width=True):
+        show_support_dialog()
 
 # ==========================================
 # 4. المحتوى الرئيسي
 # ==========================================
 
-# عنوان الصفحة
-st.title("🎓 محرك البحث الأكاديمي المحسن")
-st.markdown("""
-<div style='background: linear-gradient(90deg, #667eea 0%, #764ba2 100%); padding: 20px; border-radius: 10px; margin: 20px 0;'>
-    <h3 style='color: white; margin: 0;'>⚡ نظام ذكي لاسترجاع وتحليل المعلومات العلمية</h3>
-    <p style='color: #f0f0f0; margin: 5px 0 0 0;'>معالجة أسرع بنسبة 70% | ذاكرة تخزين مؤقت ذكية | تحسين تلقائي</p>
-</div>
-""", unsafe_allow_html=True)
-
-# عرض مقاييس الأداء
-display_performance_metrics()
+render_product_header()
+render_workflow_steps(uploaded_files)
+render_document_context()
 
 # تبويبات الواجهة
 tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
-    "🔍 البحث والتحليل الذكي", 
-    "📝 الملخص التلقائي", 
-    "🧬 استخراج الكيانات", 
-    "🌐 الترجمة العلمية",
-    "📊 تحليل النصوص",
-    "🧠 الخرائط الذهنية",
-    "🌍 بحث الويب الأكاديمي"
+    "المحادثة",
+    "الملخص",
+    "الكيانات",
+    "الترجمة",
+    "التحليل",
+    "الخريطة الذهنية",
+    "البحث الأكاديمي"
 ])
 
 # --- TAB 1: البحث الذكي ---
 with tab1:
-    st.header("🔍 البحث الذكي في المستندات")
+    st.header("المحادثة مع المستندات")
     active_document_label = st.session_state.active_document or "كل المستندات"
-    st.caption(f"نطاق البحث الحالي: {active_document_label}")
+    st.caption(f"أنت تسأل الآن ضمن: {active_document_label}")
     
-    col1, col2 = st.columns([1, 4])
-    
-    with col1:
-        st.write("🎙️ البحث الصوتي:")
+    with st.expander("استخدام الإدخال الصوتي", icon=":material/mic:"):
         # استخدام st.audio_input المدمج في Streamlit بدلاً من المكون الخارجي
         audio = st.audio_input("🎤 اضغط للتسجيل")
         
@@ -1037,27 +1004,26 @@ with tab1:
                 except Exception:
                     st.error("تعذر تحويل الصوت إلى نص. جرّب تسجيل الصوت مرة أخرى أو اكتب السؤال.")
     
-    with col2:
-        # حقل البحث - نستخدم text_input بدل chat_input عشان يشتغل جوا الأعمدة
-        text_input = st.text_input(
-            "🔍 اكتب سؤالك البحثي هنا...",
-            value=st.session_state.voice_text,
-            key="search_input_optimized",
-            placeholder="اكتب سؤالك أو استخدم التسجيل الصوتي..."
-        )
-        search_clicked = st.button("🔍 بحث", type="primary", use_container_width=True)
+    voice_prompt = None
+    if st.session_state.voice_text:
+        st.caption(f"النص الصوتي: {st.session_state.voice_text}")
+        if st.button("إرسال النص الصوتي"):
+            voice_prompt = st.session_state.voice_text
 
-    # تحديد النص النهائي للبحث
-    prompt = text_input if (search_clicked and text_input) else None
+    typed_prompt = st.chat_input("اسأل أي سؤال عن المستند المحدد...")
+    prompt = typed_prompt or voice_prompt
     # مسح النص الصوتي بعد الاستخدام
     if prompt and st.session_state.voice_text:
         st.session_state.voice_text = ""    
     # عرض سجل المحادثة
     if st.session_state.messages:
-        with st.expander("📜 سجل المحادثة", expanded=False):
-            for msg in st.session_state.messages[-5:]:  # عرض آخر 5 رسائل فقط
-                with st.chat_message(msg["role"]):
-                    st.markdown(msg["content"])
+        for msg in st.session_state.messages[-5:]:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+    elif not st.session_state.rag_engine:
+        st.info("ارفع مستنداً وابدأ الفهرسة، ثم اكتب سؤالك هنا.")
+    else:
+        st.info("ابدأ بسؤال عن الفكرة الرئيسية أو المنهج أو النتائج.")
     
     # معالجة الاستعلام
     if prompt:
@@ -1097,16 +1063,16 @@ with tab1:
                     
                     # عرض مصادر المعلومات
                     if sources:
-                        st.markdown("---")
-                        st.markdown("##### 📚 المصادر المستخدمة:")
+                        st.markdown("##### المصادر")
+                        st.caption("مراجع من المستندات المستخدمة في الإجابة")
                         
                         for src in sources[:5]:  # عرض أول 5 مصادر فقط
                             link = get_scholar_link_cached(src)
-                            col_src, col_link = st.columns([3, 1])
+                            col_src, col_link = st.columns([4, 1])
                             with col_src:
-                                st.write(f"• {src}")
+                                st.write(f"📄 {src}")
                             with col_link:
-                                st.markdown(f"[Google Scholar 🔗]({link})")
+                                st.link_button("Scholar", link, use_container_width=True)
                         
                         if len(sources) > 5:
                             st.caption(f"و {len(sources) - 5} مصادر أخرى...")
@@ -1114,28 +1080,14 @@ with tab1:
                     # إضافة الإجابة إلى سجل المحادثة
                     st.session_state.messages.append({"role": "assistant", "content": response})
                     
-                    # معلومات التشخيص
-                    with st.expander("🔧 معلومات التشخيص", expanded=False):
-                        diag_col1, diag_col2, diag_col3 = st.columns(3)
-                        with diag_col1:
-                            st.write(f"**النموذج:** {st.session_state.rag_engine.model_name}")
-                            st.write("**الموفر:** OpenRouter")
-                        with diag_col2:
-                            doc_count = st.session_state.rag_engine.get_document_count()
-                            st.write(f"**المستندات:** {doc_count}")
-                            intent = st.session_state.rag_engine.classify_query_intent(prompt)
-                            intent_ar = {"informational": "معلوماتي", "comparative": "مقارنة", "summary": "ملخص", "specific": "محدد"}
-                            st.write(f"**نوع السؤال:** {intent_ar.get(intent, intent)}")
-                        with diag_col3:
-                            stats = st.session_state.rag_engine.get_system_stats()
-                            st.write(f"**Cache Backend:** {stats.get('cache_backend', 'dict')}")
-                            st.write(f"**Cache Size:** {stats.get('cache_size', 0)}")
             else:
-                st.error("⚠️ يرجى تفعيل المحرك أولاً من الشريط الجانبي")
+                st.error("مساحة العمل غير جاهزة. ارفع مستنداً للفهرسة أو افتح الإعدادات لتهيئتها.")
     
     # قسم التحليل المتقدم (مدمج في البحث الذكي)
     st.divider()
-    st.subheader("🔬 التحليل المتقدم للمستندات")
+    advanced_panel = st.expander("تحليل متقدم", expanded=False)
+    advanced_panel.__enter__()
+    st.caption("أداة ثانوية للتحليل المتخصص عند الحاجة.")
     
     # دمج الملفات المفهرسة مع الملفات المرفوعة
     all_available_files = list(st.session_state.last_full_text.keys()) + [
@@ -1413,10 +1365,12 @@ with tab1:
                 st.warning("⚠️ يرجى تفعيل المحرك واختيار ملف")
     else:
         st.info("📁 قم برفع ملفات أو فهرسة مستندات لتفعيل التحليل المتقدم.")
+    advanced_panel.__exit__(None, None, None)
 
 # --- TAB 2: الملخص التلقائي ---
 with tab2:
-    st.header("📝 توليد الملخصات التلقائية")
+    st.header("تلخيص المستند")
+    st.caption("حوّل المستند إلى ملخص واضح بالطول والأسلوب المناسبين.")
     
     if st.session_state.last_full_text:
         # اختيار الملف
@@ -1499,7 +1453,8 @@ with tab2:
 
 # --- TAB 3: استخراج الكيانات ---
 with tab3:
-    st.header("🧬 استخراج الكيانات المسماة (NER)")
+    st.header("استخراج الكيانات")
+    st.caption("استخرج الأسماء والمواقع والمصطلحات وأقسام البحث.")
     
     if st.session_state.last_full_text:
         selected_file = st.selectbox(
@@ -1642,7 +1597,8 @@ with tab3:
 
 # --- TAB 4: الترجمة العلمية ---
 with tab4:
-    st.header("🌐 الترجمة العلمية الدقيقة")
+    st.header("الترجمة العلمية")
+    st.caption("ترجم النصوص والمستندات مع الحفاظ على المعنى والمصطلحات.")
     
     # اختيار مصدر النص للترجمة
     translation_source = st.radio(
@@ -1936,7 +1892,8 @@ Text to translate:
 
 # --- TAB 5: تحليل النصوص ---
 with tab5:
-    st.header("📊 التحليل الإحصائي للنصوص")
+    st.header("تحليل النصوص")
+    st.caption("استكشف البنية والإحصاءات والموضوعات الرئيسية.")
     
     if st.session_state.last_full_text:
         selected_files = st.multiselect(
@@ -2022,7 +1979,8 @@ with tab5:
 
 # --- TAB 6: الخرائط الذهنية ---
 with tab6:
-    st.header("🧠 الخرائط الذهنية التفاعلية")
+    st.header("الخريطة الذهنية")
+    st.caption("حوّل الأفكار والعلاقات إلى خريطة سهلة الاستكشاف.")
     st.markdown("""
     <div style='background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
                 padding: 16px 20px; border-radius: 12px; margin-bottom: 16px;'>
@@ -2214,7 +2172,8 @@ mm.setData(root);setTimeout(()=>mm.fit(),300);
 
 # --- TAB 7: بحث الويب الأكاديمي ---
 with tab7:
-    st.header("🌍 بحث الويب الأكاديمي")
+    st.header("البحث الأكاديمي")
+    st.caption("ابحث خارج المستندات عند الحاجة، ثم راجع النتائج منفصلة عن مصادر المحادثة.")
     st.markdown("""
     > ابحث مباشرة في الإنترنت عبر محركات بحث أكاديمية (Google Scholar, arXiv, PubMed, Semantic Scholar)
     > ⚠️ هذه الميزة تتطلب اتصال بالإنترنت
@@ -2299,26 +2258,5 @@ with tab7:
         st.warning("⚠️ محرك البحث على الإنترنت غير متاح. تأكد من تشغيل حاوية SearXNG.")
         st.code("docker compose up searxng -d", language="bash")
 
-# ==========================================
-# 5. تذييل الصفحة
-# ==========================================
-st.markdown("---")
-footer_col1, footer_col2, footer_col3 = st.columns(3)
-
-with footer_col1:
-    st.caption("⚡ النسخة المحسنة 4.0")
-    st.caption("🚀 معالجة أسرع بنسبة 70%")
-
-with footer_col2:
-    st.caption("🔒 تشغيل محلي + بحث ويب اختياري")
-    st.caption("🔄 تحديث تلقائي للتحسينات")
-
-with footer_col3:
-    st.caption("📊 مراقبة أداء في الوقت الحقيقي")
-    st.caption("💾 Redis + نظام caching ذكي")
-
-# مؤشر حالة النظام
-if st.session_state.rag_engine:
-    st.success("✅ النظام يعمل بشكل مثالي")
-else:
-    st.warning("⚠️ النظام غير مفعل - يرجى تفعيل المحرك من الشريط الجانبي")
+# تذييل هادئ بلا تفاصيل تشغيلية.
+st.caption("مساحة البحث الأكاديمي الذكية")
