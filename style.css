@@ -521,6 +521,21 @@ label,
     color: var(--primary-hover);
 }
 
+.st-key-chat_transcript {
+    min-height: min(52vh, 34rem);
+    padding-bottom: .75rem;
+}
+
+.st-key-tour_target_chat {
+    position: fixed;
+    left: calc(300px + (100vw - 300px - min(1180px, calc(100vw - 300px - 10rem))) / 2);
+    width: min(1180px, calc(100vw - 300px - 10rem));
+    bottom: env(safe-area-inset-bottom);
+    z-index: 20;
+    padding: .7rem 0 calc(.7rem + env(safe-area-inset-bottom));
+    background: linear-gradient(to bottom, rgba(4, 8, 14, 0), rgba(4, 8, 14, .96) 24%);
+}
+
 [data-testid="stChatInput"] {
     background: rgba(11, 15, 20, .94);
     border-top: 1px solid var(--border);
@@ -696,6 +711,11 @@ body:has(.tour-step-5) .st-key-tour_target_tools [role="tablist"] {
         0 18px 44px rgba(0, 0, 0, .32);
 }
 
+/* The chat composer is fixed even while its tour spotlight is active. */
+body:has(.tour-step-4) .st-key-tour_target_chat {
+    position: fixed;
+}
+
 body:has(.tour-step-1) .st-key-tour_target_upload [data-testid="stFileUploader"],
 body:has(.tour-step-2) .st-key-tour_target_index,
 body:has(.tour-step-3) .st-key-active_document_selector {
@@ -803,6 +823,11 @@ body:has(.tour-step-3) .st-key-active_document_selector {
     .stTabs [data-baseweb="tab"] {
         min-height: 44px;
         padding: 0 .75rem;
+    }
+
+    .st-key-tour_target_chat {
+        left: .85rem;
+        width: calc(100vw - 1.7rem);
     }
 
     body:not(:has(.tour-step-4)) .st-key-tour_coach {

@@ -1117,6 +1117,20 @@ with st.container(key="tour_target_tools"):
 with tab1:
     st.header("المحادثة")
     st.caption("اطرح سؤالاً عن المحتوى، وستظهر الإجابة ومصادرها هنا.")
+
+    # Keep the transcript ahead of the composer in the document flow. Writing
+    # new messages back into this container lets the answer appear above the
+    # input instead of pushing the conversation below it after a rerun.
+    chat_feed = st.container(key="chat_transcript")
+    with chat_feed:
+        if st.session_state.messages:
+            for msg in st.session_state.messages[-5:]:
+                with st.chat_message(msg["role"]):
+                    st.markdown(msg["content"])
+        elif not st.session_state.rag_engine:
+            render_empty_state("upload_file", "ابدأ بمستند", "ارفع مستنداً أو اختر مستنداً جاهزاً للبدء.")
+        else:
+            render_empty_state("chat", "ابدأ المحادثة", "ابدأ بسؤال عن المستند المحدد، مثل فكرته الرئيسية أو نتائجه.")
     
     with st.expander("استخدام الإدخال الصوتي", icon=":material/mic:"):
         # استخدام st.audio_input المدمج في Streamlit بدلاً من المكون الخارجي
@@ -1207,92 +1221,82 @@ with tab1:
             voice_prompt = st.session_state.voice_text
 
     typed_prompt = st.chat_input("اسأل أي سؤال عن المستند المحدد...", key="tour_target_chat")
+    new_prompt = typed_prompt or voice_prompt
     pending_prompt = st.session_state.tour_pending_prompt
-    prompt = typed_prompt or voice_prompt or pending_prompt
-    # مسح النص الصوتي بعد الاستخدام
-    if prompt and st.session_state.voice_text:
-        st.session_state.voice_text = ""
 
-    # انتقل بصرياً إلى خطوة الأدوات قبل بدء طلب المزود البطيء، ثم عالج
-    # السؤال المحفوظ في إعادة التشغيل التالية كي لا تبقى بطاقة المحادثة قديمة.
-    if prompt and not pending_prompt and st.session_state.tour_active and st.session_state.tour_step == 4:
-        st.session_state.tour_pending_prompt = prompt
-        st.session_state.tour_last_completed_step = 4
-        st.session_state.tour_step = 5
-        st.session_state.tour_confirmation = "تم إرسال سؤالك."
+    # First persist the user's real message, then rerun. The next pass draws it
+    # in the transcript above the sticky composer before the provider starts.
+    if new_prompt and not pending_prompt:
+        st.session_state.messages.append({"role": "user", "content": new_prompt})
+        st.session_state.tour_pending_prompt = new_prompt
+        if st.session_state.voice_text:
+            st.session_state.voice_text = ""
+        if st.session_state.tour_active and st.session_state.tour_step == 4:
+            st.session_state.tour_last_completed_step = 4
+            st.session_state.tour_step = 5
+            st.session_state.tour_confirmation = "تم إرسال سؤالك."
         st.rerun()
+
+    prompt = pending_prompt
     if pending_prompt:
         st.session_state.tour_pending_prompt = ""
-    # عرض سجل المحادثة
-    if st.session_state.messages:
-        for msg in st.session_state.messages[-5:]:
-            with st.chat_message(msg["role"]):
-                st.markdown(msg["content"])
-    elif not st.session_state.rag_engine:
-        render_empty_state("upload_file", "ابدأ بمستند", "ارفع مستنداً أو اختر مستنداً جاهزاً للبدء.")
-    else:
-        render_empty_state("chat", "ابدأ المحادثة", "ابدأ بسؤال عن المستند المحدد، مثل فكرته الرئيسية أو نتائجه.")
     
     # معالجة الاستعلام
     if prompt:
-        # إضافة الاستعلام إلى سجل المحادثة
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-        
-        with st.chat_message("assistant"):
-            if st.session_state.rag_engine:
-                # عرض مؤشر التحميل
-                with st.spinner("جاري البحث في المستندات..."):
-                    thinking_ph = st.empty()
-                    thinking_ph.markdown(typewriter_html, unsafe_allow_html=True)
-                    
-                    # تنفيذ الاستعلام مع caching وتاريخ المحادثة
-                    chat_history = st.session_state.messages[:-1] if len(st.session_state.messages) > 1 else []
-                    response, sources = st.session_state.rag_engine.query_with_cache(
-                        prompt,
-                        chat_history=chat_history,
-                        active_document=st.session_state.active_document,
-                    )
-                    
-                    # إخفاء مؤشر التحميل
-                    thinking_ph.empty()
-                    
-                    # عرض الإجابة داخل واجهة محسنة
-                    st.markdown(response)
-                    
-                    # زر تحميل النتيجة
-                    filename = create_fancy_download_button_optimized(
-                        response, 
-                        "search_result",
-                        "تحميل الإجابة"
-                    )
-                    
-                    # عرض مصادر المعلومات
-                    if sources:
-                        st.markdown("##### المصادر")
-                        st.caption("مراجع من المستندات المستخدمة في الإجابة")
+        with chat_feed:
+            with st.chat_message("assistant"):
+                if st.session_state.rag_engine:
+                    # عرض مؤشر التحميل
+                    with st.spinner("جاري البحث في المستندات..."):
+                        thinking_ph = st.empty()
+                        thinking_ph.markdown(typewriter_html, unsafe_allow_html=True)
+
+                        # تنفيذ الاستعلام مع caching وتاريخ المحادثة
+                        chat_history = st.session_state.messages[:-1] if len(st.session_state.messages) > 1 else []
+                        response, sources = st.session_state.rag_engine.query_with_cache(
+                            prompt,
+                            chat_history=chat_history,
+                            active_document=st.session_state.active_document,
+                        )
+
+                        # إخفاء مؤشر التحميل
+                        thinking_ph.empty()
                         
-                        for src in sources[:5]:  # عرض أول 5 مصادر فقط
-                            link = get_scholar_link_cached(src)
-                            col_src, col_link = st.columns([4, 1])
-                            with col_src:
-                                safe_src = html.escape(src)
-                                st.markdown(
-                                    f'<div class="source-chip"><span class="material-symbols-rounded" aria-hidden="true">description</span><span>{safe_src}</span></div>',
-                                    unsafe_allow_html=True,
-                                )
-                            with col_link:
-                                st.link_button("Scholar", link, icon=":material/open_in_new:", use_container_width=True)
+                        # عرض الإجابة داخل واجهة محسنة
+                        st.markdown(response)
                         
-                        if len(sources) > 5:
-                            st.caption(f"و {len(sources) - 5} مصادر أخرى...")
-                    
-                    # إضافة الإجابة إلى سجل المحادثة
-                    st.session_state.messages.append({"role": "assistant", "content": response})
-                    
-            else:
-                st.error("مساحة العمل غير جاهزة. ارفع مستنداً للفهرسة أو افتح الإعدادات لتهيئتها.")
+                        # زر تحميل النتيجة
+                        filename = create_fancy_download_button_optimized(
+                            response,
+                            "search_result",
+                            "تحميل الإجابة"
+                        )
+
+                        # عرض مصادر المعلومات
+                        if sources:
+                            st.markdown("##### المصادر")
+                            st.caption("مراجع من المستندات المستخدمة في الإجابة")
+
+                            for src in sources[:5]:  # عرض أول 5 مصادر فقط
+                                link = get_scholar_link_cached(src)
+                                col_src, col_link = st.columns([4, 1])
+                                with col_src:
+                                    safe_src = html.escape(src)
+                                    st.markdown(
+                                        f'<div class="source-chip"><span class="material-symbols-rounded" aria-hidden="true">description</span><span>{safe_src}</span></div>',
+                                        unsafe_allow_html=True,
+                                    )
+                                with col_link:
+                                    st.link_button("Scholar", link, icon=":material/open_in_new:", use_container_width=True)
+
+                            if len(sources) > 5:
+                                st.caption(f"و {len(sources) - 5} مصادر أخرى...")
+
+                        # إضافة الإجابة إلى سجل المحادثة
+                        st.session_state.messages.append({"role": "assistant", "content": response})
+
+                else:
+                    st.error("مساحة العمل غير جاهزة. ارفع مستنداً للفهرسة أو افتح الإعدادات لتهيئتها.")
     
     # قسم التحليل المتقدم (مدمج في البحث الذكي)
     st.divider()

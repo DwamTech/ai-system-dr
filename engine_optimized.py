@@ -64,6 +64,8 @@ class PerformanceMonitor:
 # Optimized RAG Engine
 # ============================================================
 class OptimizedRAGEngine:
+    QUERY_CACHE_VERSION = 2
+
     def __init__(self, model_name: str | None = None):
         self.opensearch_url = os.getenv("OPENSEARCH_URL", "http://opensearch:9200")
         self.model_name     = model_name or os.getenv(
@@ -246,6 +248,7 @@ class OptimizedRAGEngine:
             if isinstance(msg, dict)
         ]
         cache_identity = json.dumps({
+            "version": self.QUERY_CACHE_VERSION,
             "query": query,
             "history": relevant_history,
             "active_document": active_document or "__all_documents__",
@@ -339,12 +342,17 @@ class OptimizedRAGEngine:
         if not active_document:
             return vectorstore.similarity_search(search_query, k=7)
 
-        boolean_filter = {"term": {"metadata.source.keyword": active_document}}
+        source_filter = {"term": {"metadata.source.keyword": active_document}}
         docs = vectorstore.similarity_search(
             search_query,
             k=7,
-            search_type="approximate_search",
-            boolean_filter=boolean_filter,
+            # The current nmslib index applies approximate boolean filters after
+            # global nearest-neighbour selection. A general question can therefore
+            # return no chunks for a selected document even when it is indexed.
+            # Script scoring applies this exact server-side source filter first.
+            search_type="script_scoring",
+            space_type="l2",
+            pre_filter=source_filter,
         )
         if any(doc.metadata.get("source") != active_document for doc in docs):
             raise RuntimeError("Document retrieval filter returned an unexpected source")
