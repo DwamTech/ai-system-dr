@@ -100,6 +100,9 @@ services:
     environment:
       SEARXNG_BASE_URL: http://localhost:8888
       SEARXNG_SECRET: ${SEARXNG_SECRET:?Set SEARXNG_SECRET in .env}
+      SEARXNG_LIMITER: "false"
+    volumes:
+      - ./searxng:/etc/searxng:rw
     healthcheck:
       test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/healthz || wget -q --spider http://localhost:8080/ || exit 1"]
       interval: 30s

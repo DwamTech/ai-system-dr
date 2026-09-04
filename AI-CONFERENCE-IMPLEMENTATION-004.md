@@ -1,6 +1,8 @@
 # Verdict
 
-PARTIAL — static implementation is complete for the scoped migration and hardening, but local runtime acceptance could not be run on this host.
+PARTIAL — Docker runtime validation is now complete for Compose, service health,
+OpenRouter, RAG document isolation, cache scope, PDF processing, and SearXNG.
+Browser-based tab-by-tab and responsive acceptance remains outstanding.
 
 ## Git
 
@@ -9,7 +11,7 @@ PARTIAL — static implementation is complete for the scoped migration and harde
 - Baseline tag: `baseline-original-2026-09-04`
 - Implementation branch: `conference-v1`
 - Implementation commit: `1a295db feat: migrate llm generation to openrouter`
-- Final release tag: not created; live acceptance remains incomplete.
+- Runtime-fix commit/tag: pending this report update; release tag not created.
 
 ## OpenRouter
 
@@ -25,26 +27,30 @@ PARTIAL — static implementation is complete for the scoped migration and harde
 - Exact filter field/method: `metadata.source.keyword` in a server-side `boolean_filter` term query passed to `similarity_search`.
 - Returned sources are asserted to match the selected document; no Python filtering of global results is used.
 - Retrieval runs once per uncached query and supplies both prompt context and source labels.
-- Cross-document and all-documents live tests: NOT RUN (Docker/OpenSearch unavailable).
+- Live test PASS: Alpha-only retrieval returned only `runtime-alpha.pdf`; Beta-only
+  retrieval returned only `runtime-beta.pdf`; global mode returned both.
 
 ## Cache
 
 - Old key issue: question plus history length only.
 - New identity: question, last three role/content history items, active document, model, index.
-- Cross-document and same-length-history collision tests: NOT RUN.
+- Live test PASS: repeated Alpha query recorded a cache hit; the same question in
+  Beta returned its own source and answer. Same-length-history/model-change tests
+  remain static-only because they would add unnecessary provider calls.
 - Static assertion confirmed source scope/full history identity and the absence of old `history_len` keying.
 
 ## AI features
 
 | Feature | Result |
 |---|---|
-| RAG, query rewrite, summary | Migrated; runtime NOT RUN |
-| LLM NER | Migrated; runtime NOT RUN |
-| Translation | Migrated; failed chunk stops output/download |
-| Text/topic and advanced analysis | Migrated; runtime NOT RUN |
-| Mind map | Migrated; runtime NOT RUN |
-| Web result summary | Migrated; runtime NOT RUN |
-| Local rule extraction, spaCy, PDF/OCR | Preserved; runtime NOT RUN |
+| RAG and query rewrite | PASS live against OpenRouter/OpenSearch |
+| Summary | PASS live through provider boundary |
+| LLM NER and topic analysis | Provider boundary validated; UI flow not exercised |
+| Translation | PASS live through provider boundary; failed chunk stops output/download |
+| Advanced analysis | PASS live Arabic result; refusal validator PASS |
+| Mind map | PASS live Markdown result through provider boundary |
+| Web result summary | Provider boundary validated; UI button not exercised |
+| PDF/OCR | PASS safe sample extraction; spaCy/rule UI paths not exercised |
 
 ## Confirmed bug
 
@@ -52,8 +58,13 @@ The refusal `Sorry, but I can't provide the information you're asking for.` is e
 
 ## Web search
 
-- Manual SearXNG search is preserved; web snippets remain outside normal RAG context and are summarized only after explicit user action.
-- SearXNG status and actual Google Scholar availability: NOT RUN.
+- Manual academic query PASS after a focused SearXNG configuration fix. The
+  limiter previously caused internal 403 responses because no reverse-proxy/Valkey
+  configuration is present; tracked `searxng/settings.yml` disables it for this
+  loopback-only local runtime.
+- Filename/title query PASS technically (zero results is truthful for the
+  synthetic file name). Returned engine in the sample was `pdbe`; Google Scholar
+  was not returned and is not claimed available.
 
 ## Upload, safety, UI
 
@@ -63,15 +74,19 @@ The refusal `Sorry, but I can't provide the information you're asking for.` is e
 - Modified rendering paths avoid live HTML injection of LLM/PDF/entity data; user-facing provider/indexing/voice/analysis/translation/web-summary errors are safe.
 - All seven tabs remain. Active-document scope is visible in sidebar and chat; OpenRouter settings are collapsed in the sidebar.
 - OpenSearch, Redis, and SearXNG host ports are loopback-only. ngrok is not in the default runtime.
-- Desktop/mobile inspection was NOT RUN without Streamlit.
+- Streamlit health endpoint PASS at `http://127.0.0.1:8502`; desktop/mobile
+  browser inspection remains NOT RUN.
 
 ## Local runtime and validation
 
 - `py -3 -m py_compile` passed for all modified Python modules.
 - AST/static checks passed for document filtering and cache identity.
 - `git diff --check` passed before the implementation commit.
-- Docker CLI is unavailable; `docker compose config`, build, service health, browser E2E, and real-index isolation were not run.
-- The available Python launcher lacks project dependencies including `requests`, so OpenRouter HTTP smoke testing was not run without changing the host.
+- `docker compose config` PASS; image build PASS; `docker compose up -d` PASS.
+- Streamlit, OpenSearch, Redis, and SearXNG health endpoints PASS.
+- OpenRouter Arabic/English generation PASS with configured primary model.
+- Real OpenSearch document-scoped retrieval, global retrieval, cache reuse, safe
+  refusal validation, SearXNG query, and safe-PDF extraction all PASS.
 
 ## Files changed
 
@@ -80,9 +95,16 @@ The refusal `Sorry, but I can't provide the information you're asking for.` is e
 - `engine_optimized.py`: provider, source scope, cache, single retrieval, safe errors.
 - `app_optimized.py`: model control, scope UI, upload/result UX, safe rendering/errors.
 - `advanced_mindmap.py`, `web_search.py`, `utils.py`: provider/error/validation fixes.
-- `Dockerfile`, `docker-compose.yml`, `requirements.txt`: no Ollama/ngrok runtime; OpenRouter plus loopback-only local services.
+- `Dockerfile`, `docker-compose.yml`, `requirements.txt`: no Ollama/ngrok runtime; OpenRouter plus loopback-only local services. Compose now also has the focused SearXNG limiter setting.
+- `searxng/settings.yml`: JSON-enabled, local non-proxy SearXNG configuration.
 - `README.md`: updated local setup and operating notes.
 
 ## Final conference readiness
 
-NO. Demonstrated blockers: Docker is unavailable and the local Python launcher lacks project dependencies. Consequently Compose validation, OpenRouter authentication/model operation, health, PDF ingestion, real document isolation, and visual acceptance remain unverified. No corpus, vectors, mapping, or volumes were changed.
+NO. Only remaining demonstrated acceptance gaps are browser-based review at
+desktop/768px/390px and manually driving every tab's Streamlit interaction
+(including upload/download, NER, topic analysis, voice, and web-summary UI).
+Core services and the RAG isolation path are now proven live. No client corpus,
+vectors, mapping, or existing volumes were altered; test records use explicitly
+named `runtime-alpha.pdf` and `runtime-beta.pdf` documents in the fresh local
+Compose volume.

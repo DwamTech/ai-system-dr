@@ -1,0 +1,13 @@
+use_default_settings: true
+
+search:
+  formats:
+    - html
+    - json
+
+server:
+  # Replaced at runtime by SEARXNG_SECRET; this value is not a credential.
+  secret_key: "replace-at-runtime"
+  # Local, loopback-only Compose does not run a reverse proxy or Valkey limiter.
+  limiter: false
+  image_proxy: false
