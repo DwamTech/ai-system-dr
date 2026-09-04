@@ -458,7 +458,7 @@ def sanitize_filename(filename: str) -> str:
     return filename
 
 
-def validate_pdf_file(file) -> tuple[bool, str]:
+def validate_pdf_file(file, max_size_mb: int | None = None) -> tuple[bool, str]:
     """التحقق من صلاحية ملف PDF"""
     if file is None:
         return False, "لم يتم اختيار ملف"
@@ -467,8 +467,13 @@ def validate_pdf_file(file) -> tuple[bool, str]:
     if not file.name.lower().endswith('.pdf'):
         return False, "الملف ليس بصيغة PDF"
     
-    # التحقق من الحجم (الحد الأقصى 100MB)
-    max_size = 100 * 1024 * 1024
+    # Match Streamlit's configured per-file upload limit unless a caller overrides it.
+    if max_size_mb is None:
+        try:
+            max_size_mb = int(os.getenv("STREAMLIT_SERVER_MAX_UPLOAD_SIZE", "8192"))
+        except ValueError:
+            max_size_mb = 8192
+    max_size = max(1, max_size_mb) * 1024 * 1024
     if file.size > max_size:
         return False, f"حجم الملف يتجاوز الحد الأقصى ({format_file_size(max_size)})"
     

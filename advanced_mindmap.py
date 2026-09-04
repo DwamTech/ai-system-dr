@@ -89,7 +89,7 @@ class AdvancedMindMapGenerator:
             )
             
             # استدعاء LLM
-            response = self.llm.invoke(prompt)
+            response = self.llm.invoke(prompt, feature="mindmap")
             
             # استخراج JSON من الاستجابة
             mindmap = self._extract_json_from_response(response)

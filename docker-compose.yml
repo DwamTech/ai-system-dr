@@ -1,9 +1,4 @@
-version: "3.8"
-
 services:
-  # ─────────────────────────────────────────────────────────
-  # Streamlit App
-  # ─────────────────────────────────────────────────────────
   streamlit-app:
     build:
       context: .
@@ -12,23 +7,28 @@ services:
     container_name: nlp-search-optimized
     restart: unless-stopped
     ports:
-      - "8502:8501"
+      - "127.0.0.1:8502:8501"
     volumes:
       - ./data:/app/data
       - app_stats:/app/stats
     environment:
-      - OPENSEARCH_URL=${OPENSEARCH_URL:-http://opensearch:9200}
-      - OLLAMA_URL=${OLLAMA_URL:-http://ollama:11434}
-      - TESSERACT_CMD=/usr/bin/tesseract
-      - STREAMLIT_SERVER_MAX_UPLOAD_SIZE=8192
-      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
-      - SEARXNG_URL=${SEARXNG_URL:-http://searxng:8080}
-      - OPENSEARCH_USER=${OPENSEARCH_USER:-admin}
-      - OPENSEARCH_PASS=${OPENSEARCH_PASS:-admin}
+      OPENSEARCH_URL: ${OPENSEARCH_URL:-http://opensearch:9200}
+      OPENSEARCH_USER: ${OPENSEARCH_USER:-admin}
+      OPENSEARCH_PASS: ${OPENSEARCH_PASS:-admin}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      SEARXNG_URL: ${SEARXNG_URL:-http://searxng:8080}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?Set OPENROUTER_API_KEY in .env}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-qwen/qwen3-30b-a3b-instruct-2507}
+      OPENROUTER_TIMEOUT_SECONDS: ${OPENROUTER_TIMEOUT_SECONDS:-60}
+      OPENROUTER_MAX_TOKENS: ${OPENROUTER_MAX_TOKENS:-4096}
+      OPENROUTER_TEMPERATURE: ${OPENROUTER_TEMPERATURE:-0.1}
+      OPENROUTER_MAX_RETRIES: ${OPENROUTER_MAX_RETRIES:-1}
+      OPENROUTER_HTTP_REFERER: ${OPENROUTER_HTTP_REFERER:-}
+      OPENROUTER_APP_TITLE: ${OPENROUTER_APP_TITLE:-AI Conference Research Assistant}
+      TESSERACT_CMD: /usr/bin/tesseract
+      STREAMLIT_SERVER_MAX_UPLOAD_SIZE: "8192"
     depends_on:
       opensearch:
-        condition: service_healthy
-      ollama:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -43,58 +43,23 @@ services:
       retries: 5
       start_period: 60s
 
-  # ─────────────────────────────────────────────────────────
-  # Ollama — FIX: healthcheck حقيقي
-  # ─────────────────────────────────────────────────────────
-  ollama:
-    image: ollama/ollama:latest
-    container_name: ollama-optimized
-    restart: unless-stopped
-    ports:
-      - "11435:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    environment:
-      - OLLAMA_KEEP_ALIVE=5m
-      - OLLAMA_NUM_PARALLEL=2
-      - OLLAMA_MAX_LOADED_MODELS=1
-    deploy:
-      resources:
-        limits:
-          memory: 4G
-        reservations:
-          memory: 2G
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags || exit 1"]
-      interval: 30s
-      timeout: 15s
-      retries: 10
-      start_period: 90s
-    networks:
-      - nlp-network
-    command: serve
-
-  # ─────────────────────────────────────────────────────────
-  # OpenSearch
-  # ─────────────────────────────────────────────────────────
   opensearch:
     image: opensearchproject/opensearch:2.11.0
     container_name: opensearch-optimized
     restart: unless-stopped
     environment:
-      - discovery.type=single-node
-      - plugins.security.disabled=true
-      - OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g
-      - bootstrap.memory_lock=true
-      # تحسين الأداء
-      - indices.memory.index_buffer_size=20%
-      - thread_pool.search.queue_size=1000
+      discovery.type: single-node
+      plugins.security.disabled: "true"
+      OPENSEARCH_JAVA_OPTS: -Xms1g -Xmx1g
+      bootstrap.memory_lock: "true"
+      indices.memory.index_buffer_size: 20%
+      thread_pool.search.queue_size: "1000"
     ulimits:
       memlock:
         soft: -1
         hard: -1
     ports:
-      - "9201:9200"
+      - "127.0.0.1:9201:9200"
     volumes:
       - opensearch_data:/usr/share/opensearch/data
     healthcheck:
@@ -106,31 +71,17 @@ services:
     networks:
       - nlp-network
 
-  # ─────────────────────────────────────────────────────────
-  # Redis — FIX: اتصال صح + أداء أسرع
-  # ─────────────────────────────────────────────────────────
   redis:
     image: redis:7-alpine
     container_name: redis-cache
     restart: unless-stopped
     ports:
-      - "6380:6379"
+      - "127.0.0.1:6380:6379"
     volumes:
       - redis_data:/data
     command: >
-      redis-server
-      --appendonly yes
-      --maxmemory 512mb
-      --maxmemory-policy allkeys-lru
-      --save 300 1
-      --tcp-keepalive 60
-      --hz 20
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-        reservations:
-          memory: 128M
+      redis-server --appendonly yes --maxmemory 512mb
+      --maxmemory-policy allkeys-lru --save 300 1 --tcp-keepalive 60 --hz 20
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 15s
@@ -140,26 +91,15 @@ services:
     networks:
       - nlp-network
 
-  # ─────────────────────────────────────────────────────────
-  # SearXNG — FIX: ضفنا healthcheck + أمان
-  # ─────────────────────────────────────────────────────────
   searxng:
     image: searxng/searxng:latest
     container_name: searxng-engine
     restart: unless-stopped
     ports:
-      - "8888:8080"
+      - "127.0.0.1:8888:8080"
     environment:
-      - SEARXNG_BASE_URL=http://localhost:8888
-      - SEARXNG_SECRET=${SEARXNG_SECRET:-change_me_in_env_file}
-    volumes:
-      - ./searxng:/etc/searxng:rw
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-        reservations:
-          memory: 128M
+      SEARXNG_BASE_URL: http://localhost:8888
+      SEARXNG_SECRET: ${SEARXNG_SECRET:?Set SEARXNG_SECRET in .env}
     healthcheck:
       test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/healthz || wget -q --spider http://localhost:8080/ || exit 1"]
       interval: 30s
@@ -169,33 +109,11 @@ services:
     networks:
       - nlp-network
 
-  # ─────────────────────────────────────────────────────────
-  # Ngrok — FIX: token من .env
-  # ─────────────────────────────────────────────────────────
-  ngrok:
-    image: ngrok/ngrok:latest
-    container_name: ngrok-tunnel
-    restart: unless-stopped
-    command: http streamlit-app:8501
-    environment:
-      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
-    ports:
-      - "4040:4040"
-    networks:
-      - nlp-network
-    depends_on:
-      streamlit-app:
-        condition: service_healthy
-
-# ─────────────────────────────────────────────────────────
-# الشبكات والـ Volumes
-# ─────────────────────────────────────────────────────────
 networks:
   nlp-network:
     driver: bridge
 
 volumes:
-  ollama_data:
   opensearch_data:
   redis_data:
   app_stats:

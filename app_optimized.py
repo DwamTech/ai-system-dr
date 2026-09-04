@@ -33,7 +33,8 @@ from utils import (
     get_scholar_link_cached,
     save_support_ticket_optimized,
     create_fancy_download_button_optimized,
-    format_file_size
+    format_file_size,
+    validate_pdf_file,
 )
 
 # مكتبات NLP الذكية
@@ -149,6 +150,8 @@ if "db_files_loaded" not in st.session_state:
     st.session_state.db_files_loaded = False
 if "voice_text" not in st.session_state:
     st.session_state.voice_text = ""
+if "active_document" not in st.session_state:
+    st.session_state.active_document = None
 # القيم الافتراضية للإعدادات المتقدمة
 if "chunk_size" not in st.session_state:
     st.session_state.chunk_size = 2000
@@ -256,7 +259,7 @@ def create_mindmap_from_text(text, max_concepts=20):
 النص:
 {text[:6000]}"""
 
-        response = st.session_state.rag_engine.llm.invoke(mindmap_prompt)
+        response = st.session_state.rag_engine.llm.invoke(mindmap_prompt, feature="mindmap")
 
         # استخراج الـ Markdown الهرمي من الاستجابة
         import re
@@ -293,8 +296,8 @@ def create_mindmap_from_text(text, max_concepts=20):
         }
         return mindmap_data
 
-    except Exception as e:
-        st.error(f"خطأ في إنشاء الخريطة الذهنية: {e}")
+    except Exception:
+        st.error("تعذر إنشاء الخريطة الذهنية الآن. تحقق من النص وحاول مرة أخرى.")
         return None
 
 def extract_simple_mindmap(text):
@@ -413,7 +416,7 @@ def analyze_text_in_chunks(text, prompt_template, rag_engine, max_words_per_chun
     # لو النص صغير كفاية، حلله مباشرة
     if total_words <= max_words_per_chunk:
         prompt = prompt_template.replace("{text}", text)
-        return rag_engine.llm.invoke(prompt)
+        return rag_engine.llm.invoke(prompt, feature="advanced_analysis")
     
     # تقسيم النص لأجزاء
     chunks = []
@@ -428,7 +431,7 @@ def analyze_text_in_chunks(text, prompt_template, rag_engine, max_words_per_chun
     def process_chunk(index, chunk):
         chunk_prompt = prompt_template.replace("{text}", chunk)
         chunk_prompt = f"[الجزء {index+1} من {len(chunks)}]\n\n" + chunk_prompt
-        result = rag_engine.llm.invoke(chunk_prompt)
+        result = rag_engine.llm.invoke(chunk_prompt, feature="advanced_analysis")
         return index, f"### 📄 الجزء {index+1} (كلمات {index*max_words_per_chunk+1} إلى {min((index+1)*max_words_per_chunk, total_words)}):\n{result}"
         
     with ThreadPoolExecutor(max_workers=min(4, len(chunks))) as executor:
@@ -438,8 +441,8 @@ def analyze_text_in_chunks(text, prompt_template, rag_engine, max_words_per_chun
             try:
                 index, result = future.result()
                 results_dict[index] = result
-            except Exception as e:
-                results_dict[i] = f"### 📄 خطأ في الجزء {i+1}: {str(e)}"
+            except Exception as exc:
+                raise RuntimeError("تعذر تحليل أحد أجزاء المستند.") from exc
     
     # ترتيب النتائج بناءً على الفهرس
     results = [results_dict[i] for i in range(len(chunks))]
@@ -451,10 +454,10 @@ def analyze_text_in_chunks(text, prompt_template, rag_engine, max_words_per_chun
         # دمج ذكي بالنموذج
         merge_text = merge_prompt.replace("{results}", combined[:6000])
         try:
-            merged = rag_engine.llm.invoke(merge_text)
+            merged = rag_engine.llm.invoke(merge_text, feature="advanced_analysis")
             return f"## 📋 الملخص المدمج:\n{merged}\n\n---\n\n## 📑 التفاصيل بالأجزاء:\n{combined}"
-        except:
-            return combined
+        except Exception as exc:
+            raise RuntimeError("تعذر دمج نتائج التحليل.") from exc
     
     return combined
                      
@@ -468,12 +471,14 @@ with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/3135/3135715.png", width=60)
     st.markdown("### ⚙️ لوحة التحكم المحسنة")
     
-    # اختيار النموذج
-    model = st.selectbox(
-        "🧠 النموذج:",
-        ["qwen2:1.5b", "phi3", "llama3", "llama3.1", "mistral"],
-        help="اختر نموذج الذكاء الاصطناعي المناسب"
-    )
+    st.caption("الموفر: OpenRouter")
+    with st.expander("🧠 إعدادات الذكاء المتقدمة", expanded=False):
+        configured_model = os.getenv("OPENROUTER_MODEL", "qwen/qwen3-30b-a3b-instruct-2507")
+        model = st.selectbox(
+            "النموذج",
+            list(dict.fromkeys([configured_model, "qwen/qwen3-30b-a3b-instruct-2507"])),
+            help="يستخدم التطبيق نموذج OpenRouter المختار لجميع ميزات التوليد.",
+        )
     
     # إعدادات متقدمة
     with st.expander("⚡ الإعدادات المتقدمة"):
@@ -518,8 +523,8 @@ with st.sidebar:
                 if load_indexed_files_from_db():
                     st.success(f"📂 تم تحميل {len(st.session_state.indexed_files)} ملف مفهرس")
                 
-            except Exception as e:
-                st.error(f"❌ خطأ في الاتصال: {e}")
+            except Exception:
+                st.error("تعذر تفعيل المحرك. تحقق من خدمات الفهرسة ثم حاول مرة أخرى.")
                 st.session_state.rag_engine = None
     
     # --- فحص صحة النظام ---
@@ -530,11 +535,9 @@ with st.sidebar:
                 
                 st.markdown("#### 🏥 حالة النظام")
                 
-                # Ollama
-                oll_icon = "✅" if health['ollama']['status'] else "❌"
-                st.write(f"{oll_icon} **Ollama**: {health['ollama']['message']}")
-                if health['ollama']['models']:
-                    st.caption(f"   النماذج المحملة: {', '.join(health['ollama']['models'])}")
+                provider_icon = "✅" if health['provider']['status'] else "❌"
+                st.write(f"{provider_icon} **OpenRouter**: {health['provider']['message']}")
+                st.caption(f"النموذج: {health['provider']['model']}")
                 
                 # OpenSearch
                 os_icon = "✅" if health['opensearch']['status'] else "❌"
@@ -659,6 +662,29 @@ with st.sidebar:
     # --- رفع الملفات ---
     st.markdown("### 📤 رفع الملفات للفهرسة")
     
+    available_documents = list(dict.fromkeys(
+        list(st.session_state.indexed_files) + list(st.session_state.last_full_text.keys())
+    ))
+    if available_documents:
+        document_options = ["كل المستندات"] + available_documents
+        current_option = st.session_state.active_document or "كل المستندات"
+        if current_option not in document_options:
+            current_option = "كل المستندات"
+        selected_document = st.selectbox(
+            "المستند النشط للبحث والتحليل",
+            document_options,
+            index=document_options.index(current_option),
+            help="اختر ملفاً لعزل إجابات البحث عليه، أو اختر كل المستندات للبحث العام.",
+            key="active_document_selector",
+        )
+        st.session_state.active_document = (
+            None if selected_document == "كل المستندات" else selected_document
+        )
+        if st.session_state.active_document:
+            st.success(f"المستند النشط: {st.session_state.active_document}")
+    else:
+        st.info("الخطوة 1: ارفع ملفات PDF ثم فهرسها لاختيار مستند نشط.")
+
     uploaded_files = st.file_uploader(
         "اختر ملفات PDF",
         type=["pdf"],
@@ -684,6 +710,21 @@ with st.sidebar:
     
     if uploaded_files and st.button("🚀 بدء الفهرسة المحسنة", type="primary", use_container_width=True):
         if st.session_state.rag_engine:
+            valid_files = []
+            rejected_files = []
+            for uploaded_file in uploaded_files:
+                is_valid, validation_message = validate_pdf_file(uploaded_file)
+                if is_valid:
+                    valid_files.append(uploaded_file)
+                else:
+                    rejected_files.append(uploaded_file.name)
+                    st.warning(f"تعذر قبول الملف «{uploaded_file.name}»: {validation_message}")
+
+            if not valid_files:
+                st.error("لم يوجد ملف PDF صالح للفهرسة. تحقق من الملفات ثم حاول مرة أخرى.")
+                st.stop()
+
+            uploaded_files = valid_files
             # إنشاء معالج المستندات
             processor = OptimizedDocumentProcessor(
                 chunk_size=st.session_state.get('chunk_size', 2000),
@@ -731,9 +772,11 @@ with st.sidebar:
                             time_placeholder.caption(f"⏱️ الوقت المتبقي: ~{int(remaining)} ثانية")
                     
                     results = processor.process_batch_pdfs(uploaded_files, update_progress, force_ocr=force_ocr)
-                    all_results = [r['chunks'] for r in results]
+                    successful_results = [r for r in results if r.get('chunks')]
+                    failed_results = [r for r in results if not r.get('chunks')]
+                    all_results = [r['chunks'] for r in successful_results]
                     # تخزين النصوص الكاملة والصفحات من المعالجة المتوازية أيضاً
-                    for r in results:
+                    for r in successful_results:
                         if 'raw_text' in r and r.get('file'):
                             fname = r['file'] if isinstance(r['file'], str) else r['file'].name
                             st.session_state.last_full_text[fname] = r['raw_text']
@@ -755,13 +798,15 @@ with st.sidebar:
                         # معالجة الملف
                         chunks, full_txt, used_ocr, pages = processor.process_single_pdf(file, force_ocr=force_ocr)
                         
-                        # تخزين النص الكامل والصفحات
-                        st.session_state.last_full_text[file.name] = full_txt
-                        if pages:
-                            st.session_state.last_file_pages[file.name] = pages
-                        
-                        # إضافة إلى النتائج
-                        all_results.append(chunks)
+                        # Add only successfully extracted documents to the index batch.
+                        if chunks:
+                            all_results.append(chunks)
+                            st.session_state.last_full_text[file.name] = full_txt
+                            if pages:
+                                st.session_state.last_file_pages[file.name] = pages
+                        else:
+                            rejected_files.append(file.name)
+                            st.warning(f"تعذر معالجة الملف «{file.name}». تحقق من سلامة ملف PDF ثم حاول مرة أخرى.")
                         
                         # تحديث الوقت المتبقي
                         elapsed = time.time() - start_time
@@ -769,9 +814,16 @@ with st.sidebar:
                             remaining = (elapsed / (i + 1)) * (len(uploaded_files) - i - 1)
                             time_placeholder.caption(f"⏱️ الوقت المتبقي: ~{int(remaining)} ثانية")
                 
+                if not all_results:
+                    raise RuntimeError("لم تنتج الملفات الصالحة أي نص قابل للفهرسة.")
+
                 # فهرسة جميع النتائج معاً
                 info_placeholder.info("📊 جاري فهرسة النتائج في قاعدة البيانات...")
-                st.session_state.rag_engine.ingest_documents_bulk(all_results, batch_size=batch_size)
+                indexing_succeeded = st.session_state.rag_engine.ingest_documents_bulk(
+                    all_results, batch_size=batch_size
+                )
+                if not indexing_succeeded:
+                    raise RuntimeError("Indexing did not complete")
                 
                 # حساب الوقت الإجمالي
                 total_time = time.time() - start_time
@@ -783,7 +835,16 @@ with st.sidebar:
                 main_progress_bar.empty()
                 
                 # عرض النتائج
-                st.success(f"✅ تمت فهرسة {len(uploaded_files)} ملف بنجاح!")
+                indexed_count = len(all_results)
+                st.success(f"✅ تمت فهرسة {indexed_count} ملف بنجاح!")
+                if process_method == "⚡ متوازي (مناسب لملفات متعددة)":
+                    for result in failed_results:
+                        failed_name = result.get('file')
+                        failed_name = failed_name if isinstance(failed_name, str) else getattr(failed_name, 'name', 'ملف')
+                        rejected_files.append(failed_name)
+                if rejected_files:
+                    failed_names = "، ".join(dict.fromkeys(rejected_files))
+                    st.warning(f"لم تتم فهرسة بعض الملفات: {failed_names}")
                 st.balloons()
                 
                 # عرض إحصائيات الأداء
@@ -792,14 +853,14 @@ with st.sidebar:
                     if indexing_time:
                         last_time = indexing_time[-1]['value']
                         st.metric("⏱️ وقت الفهرسة الإجمالي", f"{total_time:.1f} ثانية")
-                        st.metric("⚡ متوسط الوقت لكل ملف", f"{total_time/len(uploaded_files):.1f} ثانية")
+                        st.metric("⚡ متوسط الوقت لكل ملف", f"{total_time/indexed_count:.1f} ثانية")
                 
                 # إعادة تحميل الصفحة بعد 2 ثانية
                 time.sleep(2)
                 st.rerun()
                 
-            except Exception as e:
-                st.error(f"❌ خطأ في المعالجة: {e}")
+            except Exception:
+                st.error("تعذر إكمال الفهرسة. تحقق من اتصال خدمة الفهرسة ومن صحة ملفات PDF ثم حاول مرة أخرى.")
                 placeholder.empty()
     
     st.divider()
@@ -888,6 +949,8 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
 # --- TAB 1: البحث الذكي ---
 with tab1:
     st.header("🔍 البحث الذكي في المستندات")
+    active_document_label = st.session_state.active_document or "كل المستندات"
+    st.caption(f"نطاق البحث الحالي: {active_document_label}")
     
     col1, col2 = st.columns([1, 4])
     
@@ -971,10 +1034,8 @@ with tab1:
                             
                 except ImportError:
                     st.error("⚠️ مكتبة التعرف على الصوت غير مثبتة. استخدم: pip install SpeechRecognition")
-                except Exception as e:
-                    st.error(f"❌ خطأ في معالجة الصوت: {str(e)}")
-                    import traceback
-                    st.caption(f"تفاصيل: {traceback.format_exc()[-300:]}")
+                except Exception:
+                    st.error("تعذر تحويل الصوت إلى نص. جرّب تسجيل الصوت مرة أخرى أو اكتب السؤال.")
     
     with col2:
         # حقل البحث - نستخدم text_input بدل chat_input عشان يشتغل جوا الأعمدة
@@ -1015,13 +1076,17 @@ with tab1:
                     
                     # تنفيذ الاستعلام مع caching وتاريخ المحادثة
                     chat_history = st.session_state.messages[:-1] if len(st.session_state.messages) > 1 else []
-                    response, sources = st.session_state.rag_engine.query_with_cache(prompt, chat_history=chat_history)
+                    response, sources = st.session_state.rag_engine.query_with_cache(
+                        prompt,
+                        chat_history=chat_history,
+                        active_document=st.session_state.active_document,
+                    )
                     
                     # إخفاء مؤشر التحميل
                     thinking_ph.empty()
                     
                     # عرض الإجابة داخل واجهة محسنة
-                    st.markdown(f'<div class="paper-container">{response}</div>', unsafe_allow_html=True)
+                    st.markdown(response)
                     
                     # زر تحميل النتيجة
                     filename = create_fancy_download_button_optimized(
@@ -1054,7 +1119,7 @@ with tab1:
                         diag_col1, diag_col2, diag_col3 = st.columns(3)
                         with diag_col1:
                             st.write(f"**النموذج:** {st.session_state.rag_engine.model_name}")
-                            st.write(f"**Ollama Host:** {st.session_state.rag_engine.ollama_url}")
+                            st.write("**الموفر:** OpenRouter")
                         with diag_col2:
                             doc_count = st.session_state.rag_engine.get_document_count()
                             st.write(f"**المستندات:** {doc_count}")
@@ -1334,7 +1399,7 @@ with tab1:
                         )
                         
                         progress_ph.empty()
-                        st.markdown(f'<div class="paper-container-rtl">{result}</div>', unsafe_allow_html=True)
+                        st.markdown(result)
                         
                         create_fancy_download_button_optimized(
                             result,
@@ -1342,10 +1407,8 @@ with tab1:
                             "📥 تحميل نتيجة التحليل"
                         )
                         
-                    except Exception as e:
-                        st.error(f"❌ خطأ في التحليل: {e}")
-                        import traceback
-                        st.code(traceback.format_exc())
+                    except Exception:
+                        st.error("تعذر إكمال التحليل الآن. حاول مرة أخرى أو اختر نوع تحليل أبسط.")
             else:
                 st.warning("⚠️ يرجى تفعيل المحرك واختيار ملف")
     else:
@@ -1403,7 +1466,7 @@ with tab2:
                         summary = "• " + summary
                     
                     # عرض الملخص
-                    st.markdown(f'<div class="paper-container">{summary}</div>', unsafe_allow_html=True)
+                    st.markdown(summary)
         txt = get_file_content_safe(selected_file)
         summary = summary if 'summary' in locals() else ""
 
@@ -1465,7 +1528,7 @@ with tab3:
                         sections = extract_research_sections(txt)
                         
                         # عرض التقرير
-                        st.markdown(f'<div class="paper-container">{report}</div>', unsafe_allow_html=True)
+                        st.markdown(report)
                         
                         # إحصائيات
                         col1, col2 = st.columns(2)
@@ -1524,25 +1587,11 @@ with tab3:
                                     for ent_type, entities in entities_by_type.items():
                                         color = entity_colors.get(ent_type, "#E0E0E0")
                                         with st.expander(f"**{ent_type}** ({len(entities)} كيان)", expanded=True):
-                                            # عرض كبادجات ملونة
-                                            badges_html = " ".join([
-                                                f'<span style="background-color: {color}; padding: 3px 8px; border-radius: 12px; margin: 2px; display: inline-block; font-weight: bold;">{ent}</span>'
-                                                for ent in entities[:25]
-                                            ])
-                                            st.markdown(badges_html, unsafe_allow_html=True)
+                                            st.write(" • ".join(entities[:25]))
                                     
-                                    # عرض النص مع الهايلايت
+                                    # Display original PDF text natively; do not inject it into HTML.
                                     st.markdown("### 📝 النص مع الكيانات المحددة")
-                                    highlighted_text = txt[:3000]
-                                    for start, end, label, text in sorted(entity_positions, reverse=True):
-                                        if end <= 3000:
-                                            color = entity_colors.get(label, "#E0E0E0")
-                                            highlighted_text = (
-                                                highlighted_text[:start] + 
-                                                f'<mark style="background-color: {color}; padding: 1px 4px; border-radius: 3px;" title="{label}">{text}</mark>' + 
-                                                highlighted_text[end:]
-                                            )
-                                    st.markdown(f'<div class="paper-container-rtl" style="max-height: 400px; overflow-y: auto;">{highlighted_text}</div>', unsafe_allow_html=True)
+                                    st.text_area("مقتطف من النص", txt[:3000], height=300, disabled=True)
                                     
                                     # إحصائيات
                                     total_entities = sum(len(e) for e in entities_by_type.values())
@@ -1580,14 +1629,14 @@ with tab3:
                         """
                         
                         try:
-                            entities_result = st.session_state.rag_engine.llm.invoke(entity_prompt)
-                            st.markdown(f'<div class="paper-container">{entities_result}</div>', unsafe_allow_html=True)
+                            entities_result = st.session_state.rag_engine.llm.invoke(entity_prompt, feature="ner")
+                            st.markdown(entities_result)
                             
                             lines = entities_result.count('\n')
                             st.metric("عدد الكيانات المستخرجة", lines - 2 if lines > 2 else 0)
                             
-                        except Exception as e:
-                            st.error(f"خطأ في استخراج الكيانات: {e}")
+                        except Exception:
+                            st.error("تعذر استخراج الكيانات بالذكاء الاصطناعي الآن. حاول مرة أخرى.")
     else:
         st.info("📁 قم برفع ملفات أولاً لتفعيل ميزة استخراج الكيانات.")
 
@@ -1834,7 +1883,9 @@ Text to translate:
 {chunk}"""
                     
                     try:
-                        chunk_translation = st.session_state.rag_engine.llm.invoke(translation_prompt)
+                        chunk_translation = st.session_state.rag_engine.llm.invoke(
+                            translation_prompt, feature="translation"
+                        )
                         
                         # تنظيف الناتج من أي مقدمات غير مرغوبة
                         cleaned = chunk_translation.strip()
@@ -1847,10 +1898,13 @@ Text to translate:
                         for prefix in unwanted_prefixes:
                             if cleaned.lower().startswith(prefix.lower()):
                                 cleaned = cleaned[len(prefix):].strip()
-                        
+                        if not cleaned:
+                            raise ValueError("Empty translated content")
                         all_translations.append(cleaned)
-                    except Exception as e:
-                        all_translations.append(f"[خطأ في ترجمة الجزء {i+1}: {str(e)}]")
+                    except Exception:
+                        progress_bar.empty()
+                        st.error("تعذر إكمال الترجمة. لم تُنشأ نتيجة أو ملف تنزيل غير مكتمل.")
+                        st.stop()
                     
                     progress_bar.progress((i + 1) / len(text_chunks))
                 
@@ -1858,7 +1912,7 @@ Text to translate:
                 translation = "\n\n".join(all_translations)
                 
                 # عرض النتيجة
-                st.markdown(f'<div class="paper-container-rtl">{translation}</div>', unsafe_allow_html=True)
+                st.markdown(translation)
                 
                 # إحصائيات الترجمة
                 col_t1, col_t2, col_t3 = st.columns(3)
@@ -1959,10 +2013,10 @@ with tab5:
 {analysis_text}"""
                             
                             try:
-                                topics = st.session_state.rag_engine.llm.invoke(topic_prompt)
-                                st.markdown(f'<div class="paper-container">{topics}</div>', unsafe_allow_html=True)
-                            except Exception as e:
-                                st.error(f"خطأ في تحليل الموضوعات: {e}")
+                                topics = st.session_state.rag_engine.llm.invoke(topic_prompt, feature="topics")
+                                st.markdown(topics)
+                            except Exception:
+                                st.error("تعذر تحليل الموضوعات بالذكاء الاصطناعي الآن. حاول مرة أخرى.")
     else:
         st.info("📁 لم يتم معالجة أي ملفات بعد. قم برفع ملفات PDF للتحليل.")
 
@@ -2107,7 +2161,7 @@ setTimeout(() => mm.fit(), 400);
                 st.markdown("### 🗂️ الخريطة الهرمية النصية")
                 st.code(raw_md, language="markdown")
             text_mindmap = create_text_mindmap(mindmap_data)
-            st.markdown(f'<div class="paper-container">{text_mindmap}</div>', unsafe_allow_html=True)
+            st.markdown(text_mindmap)
 
         with viz_tab3:
             st.markdown("### 📥 تصدير الخريطة")
@@ -2229,10 +2283,14 @@ with tab7:
                             if st.button("🧠 تحليل النتائج بالذكاء الاصطناعي", key="analyze_web_results"):
                                 combined_text = "\n\n".join([f"{r['title']}: {r.get('content', '')}" for r in results["results"][:5]])
                                 with st.spinner("جاري التحليل..."):
-                                    summary = st.session_state.rag_engine.llm.invoke(
-                                        f"لخص وحلل النتائج التالية من بحث الإنترنت حول '{web_query}' باللغة العربية:\n\n{combined_text[:4000]}"
-                                    )
-                                    st.markdown(f'<div class="paper-container">{summary}</div>', unsafe_allow_html=True)
+                                    try:
+                                        summary = st.session_state.rag_engine.llm.invoke(
+                                            f"لخص وحلل النتائج التالية من بحث الإنترنت حول '{web_query}' باللغة العربية:\n\n{combined_text[:4000]}",
+                                            feature="web_summary",
+                                        )
+                                        st.markdown(summary)
+                                    except Exception:
+                                        st.error("تعذر تلخيص نتائج الويب بالذكاء الاصطناعي الآن.")
                     else:
                         st.error(f"❌ {results['error']}")
             else:

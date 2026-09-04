@@ -38,6 +38,7 @@ RUN python -m spacy download xx_ent_wiki_sm
 # ── 7. نسخ ملفات المشروع ─────────────────────────────
 COPY processor_optimized.py .
 COPY engine_optimized.py .
+COPY openrouter_client.py .
 COPY research_extractor.py .
 COPY utils.py .
 COPY app_optimized.py .
@@ -53,7 +54,6 @@ COPY advanced_mindmap.py* ./
 # ── 8. المتغيرات البيئية ──────────────────────────────
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
-ENV OLLAMA_URL=http://ollama:11434
 ENV OPENSEARCH_URL=http://opensearch:9200
 ENV REDIS_URL=redis://redis:6379/0
 ENV SEARXNG_URL=http://searxng:8080
@@ -71,6 +71,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=5 \
 CMD ["streamlit", "run", "app_optimized.py", \
      "--server.port=8501", \
      "--server.address=0.0.0.0", \
-     "--server.headless=true", \
-     "--server.enableCORS=false", \
-     "--server.enableXsrfProtection=false"]
+     "--server.headless=true"]

@@ -18,7 +18,6 @@ python-multipart>=0.0.9
 langchain>=0.1.12
 langchain-community>=0.0.28
 sentence-transformers>=2.5.1
-ollama>=0.1.7
 flashrank>=0.2.0
 chromadb>=0.4.24
 

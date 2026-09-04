@@ -94,7 +94,7 @@ class WebSearchEngine:
                     "results": [],
                     "query": query,
                     "total": 0,
-                    "error": f"خطأ في SearXNG: HTTP {response.status_code}"
+                    "error": "البحث الأكاديمي غير متاح مؤقتاً. حاول مرة أخرى لاحقاً."
                 }
             
             data = response.json()
@@ -138,13 +138,13 @@ class WebSearchEngine:
                 "total": 0,
                 "error": "انتهت مهلة البحث. حاول مرة أخرى."
             }
-        except Exception as e:
+        except Exception:
             return {
                 "success": False,
                 "results": [],
                 "query": query,
                 "total": 0,
-                "error": f"خطأ في البحث: {str(e)}"
+                "error": "البحث الأكاديمي غير متاح مؤقتاً. حاول مرة أخرى لاحقاً."
             }
     
     def search_academic(self, query: str, max_results: int = 10) -> dict:
