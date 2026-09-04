@@ -171,6 +171,10 @@ if "processing_mode" not in st.session_state:
     st.session_state.processing_mode = "تلقائي"
 if "force_ocr" not in st.session_state:
     st.session_state.force_ocr = False
+if "tour_seen" not in st.session_state:
+    st.session_state.tour_seen = False
+if "tour_step" not in st.session_state:
+    st.session_state.tour_step = 0
 
 def load_indexed_files_from_db():
     """تحميل قائمة الملفات المفهرسة من قاعدة البيانات"""
@@ -211,7 +215,7 @@ def display_performance_metrics():
     if st.session_state.rag_engine and hasattr(st.session_state.rag_engine, 'get_system_stats'):
         stats = st.session_state.rag_engine.get_system_stats()
         
-        with st.expander("📊 إحصائيات النظام", expanded=False):
+        with st.expander("إحصائيات النظام", expanded=False, icon=":material/monitoring:"):
             col1, col2, col3, col4 = st.columns(4)
             
             with col1:
@@ -230,7 +234,7 @@ def display_performance_metrics():
             if hasattr(st.session_state.rag_engine, 'monitor'):
                 suggestions = st.session_state.rag_engine.monitor.get_suggestions()
                 if suggestions:
-                    st.warning("💡 مقترحات تحسين:")
+                    st.warning("مقترحات تحسين:")
                     for suggestion in suggestions:
                         st.write(f"- {suggestion}")
 
@@ -378,8 +382,8 @@ def visualize_mindmap_interactive(mindmap_data):
 def create_text_mindmap(mindmap_data):
     """إنشاء تمثيل نصي للخريطة الذهنية"""
     if not mindmap_data: return "لا توجد بيانات"
-    output = f"# 🧠 الخريطة الذهنية: {mindmap_data.get('central_topic')}\n\n"
-    output += "## 🌟 المفاهيم الرئيسية\n"
+    output = f"# الخريطة الذهنية: {mindmap_data.get('central_topic')}\n\n"
+    output += "## المفاهيم الرئيسية\n"
     for i, c in enumerate(mindmap_data.get("main_concepts", []), 1):
         output += f"{i}. **{c.get('concept')}**\n"
         if c.get("sub_concepts"): output += "   - " + " | ".join([f"`{sc}`" for sc in c.get("sub_concepts")[:5]]) + "\n"
@@ -516,13 +520,16 @@ def render_product_header():
 def render_workflow_steps(uploaded_files):
     has_uploaded = bool(uploaded_files)
     has_indexed = bool(st.session_state.indexed_files or st.session_state.last_full_text)
+    has_used_tool = bool(st.session_state.messages)
     current_step = 4 if has_indexed else 2 if has_uploaded else 1
     labels = ["رفع المستند", "الفهرسة", "اختيار النطاق", "استخدام الأدوات"]
     steps = []
     for number, label in enumerate(labels, 1):
-        state = "is-complete" if number < current_step else "is-active" if number == current_step else ""
+        is_complete = number < current_step or (number == 4 and has_used_tool)
+        state = "is-complete" if is_complete else "is-active" if number == current_step else ""
+        marker = '<i class="material-symbols-rounded">check</i>' if is_complete else str(number)
         steps.append(
-            f'<div class="workflow-step {state}"><span>{number}</span><small>{label}</small></div>'
+            f'<div class="workflow-step {state}"><span>{marker}</span><small>{label}</small></div>'
         )
     st.markdown(
         f'<div class="workflow-steps" dir="rtl">{"".join(steps)}</div>',
@@ -532,19 +539,111 @@ def render_workflow_steps(uploaded_files):
 
 def render_document_context():
     active_label = html.escape(st.session_state.active_document or "كل المستندات")
-    state_label = "جاهز للتحليل" if st.session_state.rag_engine else "يحتاج إلى تهيئة"
+    is_global = st.session_state.active_document is None
+    heading = "نطاق البحث" if is_global else "المستند النشط"
+    icon_name = "library_books" if is_global else "task"
+    state_label = "جاهز للتحليل" if st.session_state.rag_engine else "جاهز بعد الفهرسة"
     st.markdown(
         f"""
         <div class="document-context" dir="rtl">
-            <div><span>نطاق العمل الحالي</span><strong>{active_label}</strong></div>
-            <b>{state_label}</b>
+            <div class="document-context__identity">
+                <span class="material-symbols-rounded" aria-hidden="true">{icon_name}</span>
+                <div><small>{heading}</small><strong>{active_label}</strong></div>
+            </div>
+            <b><span class="status-dot"></span>{state_label}</b>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
 
-@st.dialog("الإعدادات", width="large")
+def render_empty_state(icon_name, title, body):
+    st.markdown(
+        f"""
+        <div class="empty-state" dir="rtl">
+            <span class="material-symbols-rounded" aria-hidden="true">{icon_name}</span>
+            <div><strong>{title}</strong><p>{body}</p></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_result_card(icon_name, title, content, context=None):
+    """Render generated output in one consistent, safe product surface."""
+    safe_title = html.escape(title)
+    safe_context = html.escape(str(context)) if context else ""
+    context_html = f"<small>{safe_context}</small>" if safe_context else ""
+    with st.container(border=True):
+        st.markdown(
+            f"""
+            <div class="result-card__header" dir="rtl">
+                <span class="material-symbols-rounded" aria-hidden="true">{icon_name}</span>
+                <div><strong>{safe_title}</strong>{context_html}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.markdown(content)
+
+
+TOUR_STEPS = [
+    ("رفع المستندات", "ابدأ برفع ملف PDF أو أكثر. يمكنك بعد ذلك تجهيز الملفات للبحث والتحليل."),
+    ("الفهرسة", "بعد رفع المستندات، ابدأ الفهرسة حتى يستطيع النظام البحث داخل محتواها."),
+    ("المستند النشط", "اختر المستند الذي تريد العمل عليه، أو استخدم نطاق كل المستندات للبحث العام."),
+    ("المحادثة", "اسأل أي سؤال عن المستند المحدد، وسيستخدم النظام محتواه لبناء الإجابة."),
+    ("أدوات المستند", "استخدم التلخيص، الكيانات، الترجمة، التحليل، الخريطة الذهنية، والبحث الأكاديمي عند الحاجة."),
+]
+
+
+def dismiss_tour():
+    st.session_state.tour_seen = True
+    st.session_state.tour_step = 0
+
+
+@st.dialog(
+    "جولة تعريفية",
+    width="small",
+    dismissible=True,
+    icon=":material/explore:",
+    on_dismiss=dismiss_tour,
+)
+def show_guided_tour():
+    step = st.session_state.tour_step
+    title, description = TOUR_STEPS[step]
+    st.markdown(f'<span class="tour-marker tour-step-{step + 1}"></span>', unsafe_allow_html=True)
+    st.markdown(
+        f"""
+        <div class="tour-card" dir="rtl">
+            <div class="tour-progress"><span>الخطوة {step + 1} من {len(TOUR_STEPS)}</span><b style="width:{(step + 1) * 20}%"></b></div>
+            <h3>{title}</h3>
+            <p>{description}</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    previous_col, skip_col, next_col = st.columns([1, 1.25, 1])
+    with previous_col:
+        if st.button("السابق", disabled=step == 0, use_container_width=True, icon=":material/arrow_forward:"):
+            st.session_state.tour_step -= 1
+            st.rerun()
+    with skip_col:
+        if st.button("تخطي الجولة", type="tertiary", use_container_width=True):
+            dismiss_tour()
+            st.rerun()
+    with next_col:
+        final_step = step == len(TOUR_STEPS) - 1
+        label = "ابدأ الآن" if final_step else "التالي"
+        icon = ":material/check:" if final_step else ":material/arrow_back:"
+        if st.button(label, type="primary", use_container_width=True, icon=icon):
+            if final_step:
+                dismiss_tour()
+            else:
+                st.session_state.tour_step += 1
+            st.rerun()
+
+
+@st.dialog("الإعدادات", width="large", icon=":material/settings:")
 def show_settings_dialog():
     st.markdown("### نموذج الذكاء الاصطناعي")
     configured_model = os.getenv("OPENROUTER_MODEL", "qwen/qwen3-30b-a3b-instruct-2507")
@@ -584,7 +683,7 @@ def show_settings_dialog():
         state = "جاهزة" if st.session_state.rag_engine else "غير مهيأة"
         st.write(f"حالة مساحة العمل: **{state}**")
     with action_col:
-        if st.button("تهيئة الآن", use_container_width=True):
+        if st.button("تهيئة الآن", icon=":material/power_settings_new:", use_container_width=True):
             with st.spinner("جاري تجهيز مساحة العمل..."):
                 if initialize_workspace():
                     st.success("مساحة العمل جاهزة.")
@@ -593,7 +692,7 @@ def show_settings_dialog():
                     st.error("تعذر تجهيز مساحة العمل. حاول مرة أخرى.")
 
     with st.expander("تشخيص الخدمات"):
-        if st.button("تشغيل الفحص", use_container_width=True):
+        if st.button("تشغيل الفحص", icon=":material/health_and_safety:", use_container_width=True):
             if not st.session_state.rag_engine:
                 st.warning("هيّئ مساحة العمل أولاً.")
             else:
@@ -609,22 +708,22 @@ def show_settings_dialog():
                 st.write("SearXNG", "متصل" if sx_ok else "غير متصل")
 
     with st.expander("خيارات متقدمة وخطرة"):
-        if st.button("مسح الذاكرة المؤقتة", use_container_width=True):
+        if st.button("مسح الذاكرة المؤقتة", icon=":material/cleaning_services:", use_container_width=True):
             if st.session_state.rag_engine:
                 st.session_state.rag_engine._query_cache.clear()
                 st.session_state.rag_engine._metadata_cache.clear()
                 st.success("تم مسح الذاكرة المؤقتة.")
         confirm_clear = st.checkbox("أفهم أن مسح الفهرس لا يمكن التراجع عنه")
-        if st.button("مسح فهرس المستندات", type="primary", disabled=not confirm_clear, use_container_width=True):
+        if st.button("مسح فهرس المستندات", type="primary", icon=":material/delete_forever:", disabled=not confirm_clear, use_container_width=True, key="clear_index_danger"):
             if st.session_state.rag_engine and st.session_state.rag_engine.clear_database():
                 st.session_state.indexed_files = []
                 st.session_state.active_document = None
                 st.success("تم مسح الفهرس.")
-        if st.button("عرض تقرير الأداء", use_container_width=True):
+        if st.button("عرض تقرير الأداء", icon=":material/monitoring:", use_container_width=True):
             if st.session_state.rag_engine and hasattr(st.session_state.rag_engine, "monitor"):
                 st.markdown(st.session_state.rag_engine.monitor.get_performance_report())
 
-    if st.button("حفظ وإغلاق", type="primary", use_container_width=True):
+    if st.button("حفظ وإغلاق", type="primary", icon=":material/check:", use_container_width=True):
         st.session_state.processing_mode = processing_mode
         st.session_state.chunk_size = chunk_size
         st.session_state.chunk_overlap = chunk_overlap
@@ -634,7 +733,7 @@ def show_settings_dialog():
         st.rerun()
 
 
-@st.dialog("الأرشيف")
+@st.dialog("الأرشيف", icon=":material/archive:")
 def show_archive_dialog():
     if not st.session_state.rag_engine:
         st.info("هيّئ مساحة العمل لعرض المستندات المحفوظة.")
@@ -647,12 +746,16 @@ def show_archive_dialog():
     filtered_files = [f for f in files if search_term.lower() in f.lower()]
     st.caption(f"{len(filtered_files)} مستند")
     for filename in filtered_files[:20]:
-        st.write(f"📄 {filename}")
+        st.write(filename)
 
 
-@st.dialog("المساعدة والدعم")
+@st.dialog("المساعدة والدعم", icon=":material/help:")
 def show_support_dialog():
     st.markdown("ارفع ملفات PDF، ابدأ الفهرسة، اختر نطاق العمل، ثم استخدم المحادثة أو إحدى الأدوات.")
+    if st.button("إعادة الجولة التعريفية", icon=":material/replay:", use_container_width=True):
+        st.session_state.tour_seen = False
+        st.session_state.tour_step = 0
+        st.rerun()
     with st.form("support_form_optimized"):
         rating = st.select_slider("تقييم التجربة", options=[1, 2, 3, 4, 5], value=5)
         name = st.text_input("الاسم (اختياري)")
@@ -669,7 +772,7 @@ with st.sidebar:
     st.markdown(
         """
         <div class="sidebar-brand" dir="rtl">
-            <span>◈</span>
+            <span class="material-symbols-rounded" aria-hidden="true">school</span>
             <div><strong>باحث</strong><small>مساحة أكاديمية ذكية</small></div>
         </div>
         """,
@@ -716,22 +819,22 @@ with st.sidebar:
     if uploaded_files:
         # معلومات الملفات
         total_size = sum(f.size for f in uploaded_files)
-        st.caption(f"📊 {len(uploaded_files)} ملف | الحجم الإجمالي: {format_file_size(total_size)}")
+        st.caption(f"{len(uploaded_files)} ملف | الحجم الإجمالي: {format_file_size(total_size)}")
         
         configured_mode = st.session_state.processing_mode
         if configured_mode == "متسلسل":
-            process_method = "🔢 متسلسل (مناسب لملفات كبيرة)"
+            process_method = "متسلسل (مناسب لملفات كبيرة)"
         elif configured_mode == "متوازي":
-            process_method = "⚡ متوازي (مناسب لملفات متعددة)"
+            process_method = "متوازي (مناسب لملفات متعددة)"
         else:
             process_method = (
-                "🔢 متسلسل (مناسب لملفات كبيرة)"
+                "متسلسل (مناسب لملفات كبيرة)"
                 if len(uploaded_files) == 1
-                else "⚡ متوازي (مناسب لملفات متعددة)"
+                else "متوازي (مناسب لملفات متعددة)"
             )
         force_ocr = st.session_state.force_ocr
     
-    if uploaded_files and st.button("بدء الفهرسة", type="primary", use_container_width=True):
+    if uploaded_files and st.button("بدء الفهرسة", type="primary", icon=":material/auto_awesome_motion:", use_container_width=True):
         if not st.session_state.rag_engine:
             with st.spinner("جاري تجهيز مساحة العمل..."):
                 initialize_workspace()
@@ -760,7 +863,7 @@ with st.sidebar:
             # عرض حاوية التقدم
             progress_container = st.container()
             with progress_container:
-                st.markdown("### ⏳ جاري معالجة الملفات...")
+                st.markdown("### جاري معالجة الملفات...")
                 
                 # شريط تقدم رئيسي
                 main_progress_bar = st.progress(0, text="إعداد النظام...")
@@ -781,7 +884,7 @@ with st.sidebar:
                 # معالجة الملفات
                 all_results = []
                 
-                if process_method == "⚡ متوازي (مناسب لملفات متعددة)":
+                if process_method == "متوازي (مناسب لملفات متعددة)":
                     # معالجة متوازية
                     def update_progress(completed, total, filename):
                         progress = completed / total
@@ -789,7 +892,7 @@ with st.sidebar:
                             progress,
                             text=f"معالجة {filename} ({completed}/{total})"
                         )
-                        info_placeholder.info(f"📄 جاري معالجة: {filename}")
+                        info_placeholder.info(f"جاري معالجة: {filename}")
                         
                         # حساب الوقت المتبقي
                         elapsed = time.time() - start_time
@@ -819,7 +922,7 @@ with st.sidebar:
                             text=f"معالجة {file.name} ({i+1}/{len(uploaded_files)})"
                         )
                         
-                        info_placeholder.info(f"📄 جاري معالجة: {file.name}")
+                        info_placeholder.info(f"جاري معالجة: {file.name}")
                         
                         # معالجة الملف
                         chunks, full_txt, used_ocr, pages = processor.process_single_pdf(file, force_ocr=force_ocr)
@@ -844,7 +947,7 @@ with st.sidebar:
                     raise RuntimeError("لم تنتج الملفات الصالحة أي نص قابل للفهرسة.")
 
                 # فهرسة جميع النتائج معاً
-                info_placeholder.info("📊 جاري فهرسة النتائج في قاعدة البيانات...")
+                info_placeholder.info("جاري فهرسة النتائج...")
                 indexing_succeeded = st.session_state.rag_engine.ingest_documents_bulk(
                     all_results, batch_size=st.session_state.batch_size
                 )
@@ -862,8 +965,8 @@ with st.sidebar:
                 
                 # عرض النتائج
                 indexed_count = len(all_results)
-                st.success(f"✅ تمت فهرسة {indexed_count} ملف بنجاح!")
-                if process_method == "⚡ متوازي (مناسب لملفات متعددة)":
+                st.success(f"تمت فهرسة {indexed_count} ملف بنجاح.")
+                if process_method == "متوازي (مناسب لملفات متعددة)":
                     for result in failed_results:
                         failed_name = result.get('file')
                         failed_name = failed_name if isinstance(failed_name, str) else getattr(failed_name, 'name', 'ملف')
@@ -871,7 +974,6 @@ with st.sidebar:
                 if rejected_files:
                     failed_names = "، ".join(dict.fromkeys(rejected_files))
                     st.warning(f"لم تتم فهرسة بعض الملفات: {failed_names}")
-                st.balloons()
                 
                 # عرض إحصائيات الأداء
                 if hasattr(st.session_state.rag_engine, 'monitor'):
@@ -890,11 +992,11 @@ with st.sidebar:
                 placeholder.empty()
     
     st.markdown('<div class="sidebar-spacer"></div>', unsafe_allow_html=True)
-    if st.button("الإعدادات", use_container_width=True):
+    if st.button("الإعدادات", icon=":material/settings:", use_container_width=True):
         show_settings_dialog()
-    if st.button("الأرشيف", use_container_width=True):
+    if st.button("الأرشيف", icon=":material/archive:", use_container_width=True):
         show_archive_dialog()
-    if st.button("المساعدة", use_container_width=True):
+    if st.button("المساعدة", icon=":material/help:", use_container_width=True):
         show_support_dialog()
 
 # ==========================================
@@ -907,28 +1009,27 @@ render_document_context()
 
 # تبويبات الواجهة
 tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
-    "المحادثة",
-    "الملخص",
-    "الكيانات",
-    "الترجمة",
-    "التحليل",
-    "الخريطة الذهنية",
-    "البحث الأكاديمي"
+    ":material/chat: المحادثة",
+    ":material/summarize: الملخص",
+    ":material/label: الكيانات",
+    ":material/translate: الترجمة",
+    ":material/analytics: التحليل",
+    ":material/hub: الخريطة الذهنية",
+    ":material/menu_book: البحث الأكاديمي"
 ])
 
 # --- TAB 1: البحث الذكي ---
 with tab1:
-    st.header("المحادثة مع المستندات")
-    active_document_label = st.session_state.active_document or "كل المستندات"
-    st.caption(f"أنت تسأل الآن ضمن: {active_document_label}")
+    st.header("المحادثة")
+    st.caption("اطرح سؤالاً عن المحتوى، وستظهر الإجابة ومصادرها هنا.")
     
     with st.expander("استخدام الإدخال الصوتي", icon=":material/mic:"):
         # استخدام st.audio_input المدمج في Streamlit بدلاً من المكون الخارجي
-        audio = st.audio_input("🎤 اضغط للتسجيل")
+        audio = st.audio_input("اضغط للتسجيل")
         
         # معالجة الصوت إذا تم التسجيل
         if audio is not None:
-            with st.spinner("🔄 جاري تحويل الصوت إلى نص..."):
+            with st.spinner("جاري تحويل الصوت إلى نص..."):
                 try:
                     import speech_recognition as sr
                     import subprocess
@@ -979,35 +1080,35 @@ with tab1:
                             st.warning(f"تعذّر تحويل الصوت: {conv_err}")
                     
                     if audio_data is None:
-                        st.error("❌ تعذّر قراءة ملف الصوت. حاول مرة أخرى.")
+                        st.error("تعذّر قراءة ملف الصوت. حاول مرة أخرى.")
                     else:
                         # التعرف على الكلام - محاولة العربية أولاً ثم الإنجليزية
                         recognized = None
                         try:
                             recognized = r.recognize_google(audio_data, language="ar-EG")
                             st.session_state.voice_text = recognized
-                            st.success(f"✅ تم التعرف: {recognized}")
+                            st.success(f"تم التعرف: {recognized}")
                         except sr.UnknownValueError:
                             try:
                                 recognized = r.recognize_google(audio_data, language="en-US")
                                 st.session_state.voice_text = recognized
-                                st.success(f"✅ Recognized: {recognized}")
+                                st.success(f"تم التعرف: {recognized}")
                             except sr.UnknownValueError:
-                                st.error("❌ لم أتمكن من فهم الصوت، تأكد من وضوح الصوت وأنك تتحدث بالعربية أو الإنجليزية")
+                                st.error("لم أتمكن من فهم الصوت. تأكد من وضوح التسجيل.")
                             except sr.RequestError as e:
-                                st.error(f"❌ خطأ في خدمة التعرف على الصوت: {e}")
+                                st.error(f"خطأ في خدمة التعرف على الصوت: {e}")
                         except sr.RequestError as e:
-                            st.error(f"❌ خطأ في خدمة التعرف على الصوت: {e}")
+                            st.error(f"خطأ في خدمة التعرف على الصوت: {e}")
                             
                 except ImportError:
-                    st.error("⚠️ مكتبة التعرف على الصوت غير مثبتة. استخدم: pip install SpeechRecognition")
+                    st.error("الإدخال الصوتي غير متاح الآن.")
                 except Exception:
                     st.error("تعذر تحويل الصوت إلى نص. جرّب تسجيل الصوت مرة أخرى أو اكتب السؤال.")
     
     voice_prompt = None
     if st.session_state.voice_text:
         st.caption(f"النص الصوتي: {st.session_state.voice_text}")
-        if st.button("إرسال النص الصوتي"):
+        if st.button("إرسال النص الصوتي", icon=":material/arrow_upward:"):
             voice_prompt = st.session_state.voice_text
 
     typed_prompt = st.chat_input("اسأل أي سؤال عن المستند المحدد...")
@@ -1021,9 +1122,9 @@ with tab1:
             with st.chat_message(msg["role"]):
                 st.markdown(msg["content"])
     elif not st.session_state.rag_engine:
-        st.info("ارفع مستنداً وابدأ الفهرسة، ثم اكتب سؤالك هنا.")
+        render_empty_state("upload_file", "ابدأ بمستند", "ارفع مستنداً أو اختر مستنداً جاهزاً للبدء.")
     else:
-        st.info("ابدأ بسؤال عن الفكرة الرئيسية أو المنهج أو النتائج.")
+        render_empty_state("chat", "ابدأ المحادثة", "ابدأ بسؤال عن المستند المحدد، مثل فكرته الرئيسية أو نتائجه.")
     
     # معالجة الاستعلام
     if prompt:
@@ -1036,7 +1137,7 @@ with tab1:
         with st.chat_message("assistant"):
             if st.session_state.rag_engine:
                 # عرض مؤشر التحميل
-                with st.spinner("🔍 جاري البحث في المستندات..."):
+                with st.spinner("جاري البحث في المستندات..."):
                     thinking_ph = st.empty()
                     thinking_ph.markdown(typewriter_html, unsafe_allow_html=True)
                     
@@ -1058,7 +1159,7 @@ with tab1:
                     filename = create_fancy_download_button_optimized(
                         response, 
                         "search_result",
-                        "📥 تحميل الإجابة"
+                        "تحميل الإجابة"
                     )
                     
                     # عرض مصادر المعلومات
@@ -1070,9 +1171,13 @@ with tab1:
                             link = get_scholar_link_cached(src)
                             col_src, col_link = st.columns([4, 1])
                             with col_src:
-                                st.write(f"📄 {src}")
+                                safe_src = html.escape(src)
+                                st.markdown(
+                                    f'<div class="source-chip"><span class="material-symbols-rounded" aria-hidden="true">description</span><span>{safe_src}</span></div>',
+                                    unsafe_allow_html=True,
+                                )
                             with col_link:
-                                st.link_button("Scholar", link, use_container_width=True)
+                                st.link_button("Scholar", link, icon=":material/open_in_new:", use_container_width=True)
                         
                         if len(sources) > 5:
                             st.caption(f"و {len(sources) - 5} مصادر أخرى...")
@@ -1085,7 +1190,7 @@ with tab1:
     
     # قسم التحليل المتقدم (مدمج في البحث الذكي)
     st.divider()
-    advanced_panel = st.expander("تحليل متقدم", expanded=False)
+    advanced_panel = st.expander("تحليل متقدم", expanded=False, icon=":material/science:")
     advanced_panel.__enter__()
     st.caption("أداة ثانوية للتحليل المتخصص عند الحاجة.")
     
@@ -1097,7 +1202,7 @@ with tab1:
     
     if all_available_files:
         selected_analysis_file = st.selectbox(
-            "📄 اختر الملف للتحليل:",
+            "اختر الملف للتحليل:",
             all_available_files,
             key="advanced_analysis_file_tab1"
         )
@@ -1105,21 +1210,21 @@ with tab1:
         col_atype, col_lang = st.columns([2, 1])
         with col_atype:
             analysis_type = st.selectbox(
-                "🔬 نوع التحليل:",
+                "نوع التحليل:",
                 [
-                    "📚 تحليل الورقة العلمية",
-                    "🎭 تحليل الشعر والبلاغة",
-                    "🔤 التحليل اللغوي العميق",
-                    "📊 تحليل مقارن",
-                    "🔗 اكتشاف الفجوات البحثية",
-                    "📈 استخراج الأرقام والإحصائيات"
+                    "تحليل الورقة العلمية",
+                    "تحليل الشعر والبلاغة",
+                    "التحليل اللغوي العميق",
+                    "تحليل مقارن",
+                    "اكتشاف الفجوات البحثية",
+                    "استخراج الأرقام والإحصائيات"
                 ],
                 key="analysis_type_tab1"
             )
         with col_lang:
             output_lang = st.selectbox(
-                "🌐 لغة الإخراج:",
-                ["🔄 تلقائي (حسب المستند)", "🇸🇦 عربي دائماً", "🇬🇧 إنجليزي دائماً"],
+                "لغة الإخراج:",
+                ["تلقائي (حسب المستند)", "عربي دائماً", "إنجليزي دائماً"],
                 key="analysis_output_lang"
             )
         
@@ -1128,9 +1233,9 @@ with tab1:
         FAST_LIMIT    = 4500   # حد التحليل المباشر (كلمة)
         SAMPLE_LIMIT  = 4500   # حد العينة الذكية (كلمة)
         
-        if st.button("🚀 بدء التحليل المتقدم", type="primary", use_container_width=True):
+        if st.button("بدء التحليل المتقدم", type="primary", icon=":material/science:", use_container_width=True):
             if st.session_state.rag_engine and selected_analysis_file:
-                with st.spinner("🔬 جاري التحليل المتقدم..."):
+                with st.spinner("جاري التحليل المتقدم..."):
                     txt = get_file_content_safe(selected_analysis_file)
                     total_words = len(txt.split())
                     total_chars = len(txt)
@@ -1141,10 +1246,10 @@ with tab1:
                     arabic_ratio = arabic_chars / alpha_chars if alpha_chars > 0 else 0
                     doc_is_arabic = arabic_ratio >= 0.3   # أكثر من 30% حروف عربية
                     
-                    if output_lang == "🇸🇦 عربي دائماً":
+                    if output_lang == "عربي دائماً":
                         lang_instruction = "IMPORTANT: You MUST write your ENTIRE response in Arabic only. Do not use English at all.\n\n"
                         lang_label = "🇸🇦 عربي"
-                    elif output_lang == "🇬🇧 إنجليزي دائماً":
+                    elif output_lang == "إنجليزي دائماً":
                         lang_instruction = "IMPORTANT: You MUST write your ENTIRE response in English only. Do not use Arabic at all.\n\n"
                         lang_label = "🇬🇧 إنجليزي"
                     else:  # تلقائي
@@ -1162,7 +1267,7 @@ with tab1:
                     prompt_template = ""
                     merge_prompt = f"{lang_instruction}قم بدمج وتلخيص النتائج التالية في تقرير متماسك وشامل دون تكرار:\n\n{{results}}"
                     
-                    if analysis_type == "📚 تحليل الورقة العلمية":
+                    if analysis_type == "تحليل الورقة العلمية":
                         prompt_template = f"""{lang_instruction}أنت محلل أبحاث علمية خبير. حلل الورقة العلمية التالية تحليلاً فعلياً مفصلاً.
 
 مطلوب منك:
@@ -1181,7 +1286,7 @@ with tab1:
 النص:
 {{text}}"""
 
-                    elif analysis_type == "🎭 تحليل الشعر والبلاغة":
+                    elif analysis_type == "تحليل الشعر والبلاغة":
                         prompt_template = f"""{lang_instruction}أنت خبير في البلاغة العربية والنقد الأدبي. حلل النص التالي تحليلاً بلاغياً فعلياً ومفصلاً.
 
 مطلوب منك استخراج وتحليل كل مما يلي مع ذكر الاقتباس المباشر من النص:
@@ -1212,7 +1317,7 @@ with tab1:
 النص:
 {{text}}"""
 
-                    elif analysis_type == "🔤 التحليل اللغوي العميق":
+                    elif analysis_type == "التحليل اللغوي العميق":
                         prompt_template = f"""{lang_instruction}أنت عالم لغويات متخصص. حلل النص التالي تحليلاً لغوياً فعلياً ومفصلاً.
 
 مطلوب منك:
@@ -1245,7 +1350,7 @@ with tab1:
 النص:
 {{text}}"""
 
-                    elif analysis_type == "📊 تحليل مقارن":
+                    elif analysis_type == "تحليل مقارن":
                         prompt_template = f"""{lang_instruction}أنت خبير في التحليل المقارن للأبحاث. حلل النص التالي تحليلاً مقارناً فعلياً.
 
 مطلوب منك:
@@ -1273,7 +1378,7 @@ with tab1:
 النص:
 {{text}}"""
 
-                    elif analysis_type == "🔗 اكتشاف الفجوات البحثية":
+                    elif analysis_type == "اكتشاف الفجوات البحثية":
                         prompt_template = f"""{lang_instruction}أنت خبير في تحديد الفجوات البحثية. حلل النص التالي لاكتشاف الفجوات.
 
 مطلوب منك:
@@ -1340,7 +1445,7 @@ with tab1:
                     try:
                         # ── تنفيذ التحليل — استدعاء ذكي وموزع ───────────
                         progress_ph = st.empty()
-                        progress_ph.info(f"⏳ جاري التحليل الشامل لجميع الأجزاء... ({total_words:,} كلمة)")
+                        progress_ph.info(f"جاري التحليل الشامل لجميع الأجزاء... ({total_words:,} كلمة)")
                         
                         result = analyze_text_in_chunks(
                             text=txt,
@@ -1351,20 +1456,20 @@ with tab1:
                         )
                         
                         progress_ph.empty()
-                        st.markdown(result)
+                        render_result_card("science", "نتيجة التحليل", result, selected_analysis_file)
                         
                         create_fancy_download_button_optimized(
                             result,
                             f"advanced_analysis_{selected_analysis_file[:20]}",
-                            "📥 تحميل نتيجة التحليل"
+                            "تحميل نتيجة التحليل"
                         )
                         
                     except Exception:
                         st.error("تعذر إكمال التحليل الآن. حاول مرة أخرى أو اختر نوع تحليل أبسط.")
             else:
-                st.warning("⚠️ يرجى تفعيل المحرك واختيار ملف")
+                st.warning("يرجى تهيئة مساحة العمل واختيار ملف.")
     else:
-        st.info("📁 قم برفع ملفات أو فهرسة مستندات لتفعيل التحليل المتقدم.")
+        render_empty_state("science", "التحليل المتقدم", "ارفع مستنداً أو اختر مستنداً جاهزاً لتفعيل التحليل المتقدم.")
     advanced_panel.__exit__(None, None, None)
 
 # --- TAB 2: الملخص التلقائي ---
@@ -1385,7 +1490,7 @@ with tab2:
         with col1:
             summary_type = st.selectbox(
                 "نوع الملخص:",
-                ["📋 ملخص تنفيذي", "📊 ملخص تحليلي", "🎯 ملخص سريع"]
+                ["ملخص تنفيذي", "ملخص تحليلي", "ملخص سريع"]
             )
         
         with col2:
@@ -1398,9 +1503,9 @@ with tab2:
         with col3:
             include_bullets = st.toggle("تضمين نقاط", value=True)
         
-        if st.button("⚡ توليد الملخص", type="primary", use_container_width=True):
+        if st.button("توليد الملخص", type="primary", icon=":material/summarize:", use_container_width=True):
             if st.session_state.rag_engine and selected_file:
-                with st.spinner("📝 جاري تحليل النص وتوليد الملخص..."):
+                with st.spinner("جاري تحليل النص وتوليد الملخص..."):
                     # عرض مؤشر التحميل
                     pencil_ph = st.empty()
                     pencil_ph.markdown(pencil_html, unsafe_allow_html=True)
@@ -1420,7 +1525,7 @@ with tab2:
                         summary = "• " + summary
                     
                     # عرض الملخص
-                    st.markdown(summary)
+                    render_result_card("summarize", "الملخص", summary, selected_file)
         txt = get_file_content_safe(selected_file)
         summary = summary if 'summary' in locals() else ""
 
@@ -1446,10 +1551,10 @@ with tab2:
         create_fancy_download_button_optimized(
             summary,
             f"summary_{selected_file}",
-            "📥 تحميل الملخص"
+            "تحميل الملخص"
         )
     else:
-        st.info("📁 لم يتم معالجة أي ملفات بعد. قم برفع ملفات PDF أولاً.")
+        render_empty_state("summarize", "لا يوجد مستند للتلخيص", "اختر المستند الذي تريد تلخيصه.")
 
 # --- TAB 3: استخراج الكيانات ---
 with tab3:
@@ -1466,14 +1571,14 @@ with tab3:
         # اختيار طريقة الاستخراج
         extraction_method = st.radio(
             "طريقة الاستخراج:",
-            ["⚡ سريع (spaCy)", "🧠 متقدم (LLM)", "📑 أقسام البحث العلمي"],
+            ["سريع (spaCy)", "متقدم (LLM)", "أقسام البحث العلمي"],
             horizontal=True,
             help="spaCy أسرع 10x، LLM أدق، أقسام البحث تستخرج الأهداف والنتائج"
         )
         
-        if extraction_method == "📑 أقسام البحث العلمي":
+        if extraction_method == "أقسام البحث العلمي":
             # استخراج أقسام البحث العلمي
-            if st.button("📑 استخراج أقسام البحث", type="primary"):
+            if st.button("استخراج أقسام البحث", type="primary", icon=":material/article:"):
                 if selected_file:
                     with st.spinner("📖 جاري استخراج أقسام البحث العلمي..."):
                         txt = get_file_content_safe(selected_file)
@@ -1483,7 +1588,7 @@ with tab3:
                         sections = extract_research_sections(txt)
                         
                         # عرض التقرير
-                        st.markdown(report)
+                        render_result_card("article", "أقسام البحث", report, selected_file)
                         
                         # إحصائيات
                         col1, col2 = st.columns(2)
@@ -1497,12 +1602,12 @@ with tab3:
                         create_fancy_download_button_optimized(
                             report,
                             f"research_sections_{selected_file}",
-                            "📥 تحميل التقرير"
+                            "تحميل التقرير"
                         )
         
-        elif extraction_method == "⚡ سريع (spaCy)":
+        elif extraction_method == "سريع (spaCy)":
             # استخدام spaCy للاستخراج السريع
-            if st.button("🔍 استخراج الكيانات (سريع)", type="primary"):
+            if st.button("استخراج الكيانات (سريع)", type="primary", icon=":material/label:"):
                 if selected_file:
                     with st.spinner("⚡ جاري استخراج الكيانات بـ spaCy..."):
                         txt = get_file_content_safe(selected_file)
@@ -1568,7 +1673,7 @@ with tab3:
                 default=["الأشخاص", "المؤسسات", "المصطلحات التقنية"]
             )
             
-            if st.button("🔍 استخراج الكيانات (متقدم)", type="primary"):
+            if st.button("استخراج الكيانات (متقدم)", type="primary", icon=":material/label:"):
                 if selected_file and st.session_state.rag_engine:
                     with st.spinner("🧪 جاري تحليل النص واستخراج الكيانات..."):
                         txt = get_file_content_safe(selected_file)
@@ -1585,7 +1690,7 @@ with tab3:
                         
                         try:
                             entities_result = st.session_state.rag_engine.llm.invoke(entity_prompt, feature="ner")
-                            st.markdown(entities_result)
+                            render_result_card("label", "الكيانات المستخرجة", entities_result, selected_file)
                             
                             lines = entities_result.count('\n')
                             st.metric("عدد الكيانات المستخرجة", lines - 2 if lines > 2 else 0)
@@ -1593,7 +1698,7 @@ with tab3:
                         except Exception:
                             st.error("تعذر استخراج الكيانات بالذكاء الاصطناعي الآن. حاول مرة أخرى.")
     else:
-        st.info("📁 قم برفع ملفات أولاً لتفعيل ميزة استخراج الكيانات.")
+        render_empty_state("label", "لا يوجد مستند جاهز", "ارفع مستنداً أو اختر مستنداً جاهزاً لاستخراج الكيانات.")
 
 # --- TAB 4: الترجمة العلمية ---
 with tab4:
@@ -1602,14 +1707,14 @@ with tab4:
     
     # اختيار مصدر النص للترجمة
     translation_source = st.radio(
-        "📄 اختر مصدر النص:",
-        ["✍️ إدخال يدوي", "📁 من ملف محمّل"],
+        "اختر مصدر النص:",
+        ["إدخال يدوي", "من ملف محمّل"],
         horizontal=True
     )
     
     src_text = ""
     
-    if translation_source == "✍️ إدخال يدوي":
+    if translation_source == "إدخال يدوي":
         src_text = st.text_area(
             "النص المصدر:",
             height=200,
@@ -1646,12 +1751,12 @@ with tab4:
                 
                 # اختيار نطاق الترجمة
                 translation_scope = st.radio(
-                    "🎯 ماذا تريد أن تترجم؟",
-                    ["📄 صفحة واحدة", "📑 نطاق صفحات", "📚 المستند كاملاً"],
+                    "ماذا تريد أن تترجم؟",
+                    ["صفحة واحدة", "نطاق صفحات", "المستند كاملاً"],
                     horizontal=True
                 )
                 
-                if translation_scope == "📄 صفحة واحدة":
+                if translation_scope == "صفحة واحدة":
                     page_num = st.number_input(
                         "رقم الصفحة:",
                         min_value=1,
@@ -1670,7 +1775,7 @@ with tab4:
                     st.text_area(f"محتوى الصفحة {page_num}:", preview, height=120, disabled=True)
                     st.caption(f"📏 حجم الصفحة: {len(src_text):,} حرف | {len(src_text.split()):,} كلمة")
                     
-                elif translation_scope == "📑 نطاق صفحات":
+                elif translation_scope == "نطاق صفحات":
                     col_from, col_to = st.columns(2)
                     with col_from:
                         from_page = st.number_input("من صفحة:", min_value=1, max_value=total_pages, value=1, key="trans_from_page")
@@ -1692,101 +1797,65 @@ with tab4:
                     src_text = full_text
                     st.warning(f"⚠️ سيتم ترجمة المستند كاملاً ({total_chars:,} حرف | {len(full_text.split()):,} كلمة). قد يستغرق وقتاً طويلاً!")
         else:
-            st.info("📁 قم برفع ملفات PDF أولاً")
+            render_empty_state("translate", "لا يوجد مستند للترجمة", "ارفع مستنداً أو الصق النص الذي تريد ترجمته.")
     
     st.divider()
     
     # خريطة اللغات (لضمان استخدام الاسم الصحيح في البرومبت)
     LANG_MAP = {
-        "🇬🇧 الإنجليزية": "English",
-        "🇸🇦 العربية": "Arabic",
-        "🇫🇷 الفرنسية": "French",
-        "🇩🇪 الألمانية": "German",
-        "🇪🇸 الإسبانية": "Spanish",
-        "🇮🇹 الإيطالية": "Italian",
-        "🇵🇹 البرتغالية": "Portuguese",
-        "🇨🇳 الصينية": "Chinese (Simplified)",
-        "🇯🇵 اليابانية": "Japanese",
-        "🇰🇷 الكورية": "Korean",
-        "🇮🇳 الهندية": "Hindi",
-        "🇹🇷 التركية": "Turkish",
-        "🇮🇩 الإندونيسية": "Indonesian",
-        "🇻🇳 الفيتنامية": "Vietnamese",
-        "🇹🇭 التايلاندية": "Thai",
-        "🇷🇺 الروسية": "Russian",
-        "🇵🇱 البولندية": "Polish",
-        "🇳🇱 الهولندية": "Dutch",
-        "🇸🇪 السويدية": "Swedish",
-        "🇬🇷 اليونانية": "Greek",
-        "🇮🇱 العبرية": "Hebrew",
-        "🇮🇷 الفارسية": "Persian (Farsi)",
-        "🇵🇰 الأوردية": "Urdu",
+        "الإنجليزية": "English", "العربية": "Arabic", "الفرنسية": "French",
+        "الألمانية": "German", "الإسبانية": "Spanish", "الإيطالية": "Italian",
+        "البرتغالية": "Portuguese", "الصينية": "Chinese (Simplified)", "اليابانية": "Japanese",
+        "الكورية": "Korean", "الهندية": "Hindi", "التركية": "Turkish",
+        "الإندونيسية": "Indonesian", "الفيتنامية": "Vietnamese", "التايلاندية": "Thai",
+        "الروسية": "Russian", "البولندية": "Polish", "الهولندية": "Dutch",
+        "السويدية": "Swedish", "اليونانية": "Greek", "العبرية": "Hebrew",
+        "الفارسية": "Persian (Farsi)", "الأوردية": "Urdu",
     }
 
     # إعدادات الترجمة المحسنة
-    st.subheader("⚙️ إعدادات الترجمة")
+    st.subheader("إعدادات الترجمة")
     
     col_lang1, col_lang2 = st.columns(2)
     
     with col_lang1:
         target_lang = st.selectbox(
-            "🌍 الترجمة إلى:",
+            "الترجمة إلى:",
             [
                 "--- اللغات الرئيسية ---",
-                "🇬🇧 الإنجليزية",
-                "🇸🇦 العربية", 
-                "🇫🇷 الفرنسية",
-                "🇩🇪 الألمانية",
-                "🇪🇸 الإسبانية",
-                "🇮🇹 الإيطالية",
-                "🇵🇹 البرتغالية",
+                "الإنجليزية", "العربية", "الفرنسية", "الألمانية",
+                "الإسبانية", "الإيطالية", "البرتغالية",
                 "--- اللغات الآسيوية ---",
-                "🇨🇳 الصينية",
-                "🇯🇵 اليابانية",
-                "🇰🇷 الكورية",
-                "🇮🇳 الهندية",
-                "🇹🇷 التركية",
-                "🇮🇩 الإندونيسية",
-                "🇻🇳 الفيتنامية",
-                "🇹🇭 التايلاندية",
+                "الصينية", "اليابانية", "الكورية", "الهندية", "التركية",
+                "الإندونيسية", "الفيتنامية", "التايلاندية",
                 "--- لغات أخرى ---",
-                "🇷🇺 الروسية",
-                "🇵🇱 البولندية",
-                "🇳🇱 الهولندية",
-                "🇸🇪 السويدية",
-                "🇬🇷 اليونانية",
-                "🇮🇱 العبرية",
-                "🇮🇷 الفارسية",
-                "🇵🇰 الأوردية"
+                "الروسية", "البولندية", "الهولندية", "السويدية", "اليونانية",
+                "العبرية", "الفارسية", "الأوردية"
             ],
             index=1
         )
     
     with col_lang2:
         translation_style = st.selectbox(
-            "📝 أسلوب الترجمة:",
+            "أسلوب الترجمة:",
             [
-                "🎓 أكاديمي رسمي",
-                "📰 صحفي إعلامي", 
-                "📖 أدبي سلس",
-                "💼 تجاري مهني",
-                "🔬 تقني متخصص",
-                "📚 تعليمي مبسط"
+                "أكاديمي رسمي", "صحفي إعلامي", "أدبي سلس",
+                "تجاري مهني", "تقني متخصص", "تعليمي مبسط"
             ]
         )
     
     # إعدادات متقدمة
-    with st.expander("⚙️ إعدادات متقدمة"):
+    with st.expander("إعدادات متقدمة", icon=":material/tune:"):
         col_opt1, col_opt2 = st.columns(2)
         with col_opt1:
-            preserve_terms = st.toggle("🔬 الحفاظ على المصطلحات التقنية", value=True)
-            include_notes = st.toggle("📝 إضافة هوامش تفسيرية", value=False)
+            preserve_terms = st.toggle("الحفاظ على المصطلحات التقنية", value=True)
+            include_notes = st.toggle("إضافة هوامش تفسيرية", value=False)
         with col_opt2:
-            formal_style = st.toggle("📜 أسلوب رسمي", value=True)
-            keep_formatting = st.toggle("📋 الحفاظ على التنسيق", value=True)
+            formal_style = st.toggle("أسلوب رسمي", value=True)
+            keep_formatting = st.toggle("الحفاظ على التنسيق", value=True)
     
     # زر الترجمة
-    if st.button("🌐 بدء الترجمة", type="primary", use_container_width=True):
+    if st.button("بدء الترجمة", type="primary", icon=":material/translate:", use_container_width=True):
         if src_text and st.session_state.rag_engine:
             # استخدام خريطة اللغات للحصول على الاسم الإنجليزي الصحيح
             clean_lang = LANG_MAP.get(target_lang, None)
@@ -1808,11 +1877,11 @@ with tab4:
                 status_container = st.container()
                 
                 # استخراج اسم الأسلوب بشكل نظيف
-                style_name = translation_style.split(" ", 1)[-1] if " " in translation_style else translation_style
+                style_name = translation_style
                 
                 for i, chunk in enumerate(text_chunks):
                     with status_container:
-                        st.caption(f"⏳ جاري ترجمة الجزء {i+1}/{len(text_chunks)} ({len(chunk.split())} كلمة)...")
+                        st.caption(f"جاري ترجمة الجزء {i+1}/{len(text_chunks)} ({len(chunk.split())} كلمة)...")
                     
                     # بناء تعليمات الأسلوب
                     style_instructions = []
@@ -1868,7 +1937,8 @@ Text to translate:
                 translation = "\n\n".join(all_translations)
                 
                 # عرض النتيجة
-                st.markdown(translation)
+                translation_context = selected_trans_file if translation_source != "إدخال يدوي" else "نص مباشر"
+                render_result_card("translate", "الترجمة", translation, translation_context)
                 
                 # إحصائيات الترجمة
                 col_t1, col_t2, col_t3 = st.columns(3)
@@ -1883,7 +1953,7 @@ Text to translate:
                 create_fancy_download_button_optimized(
                     translation,
                     f"translation_{target_lang}",
-                    "📥 تحميل الترجمة"
+                    "تحميل الترجمة"
                 )
         elif not src_text:
             st.warning("⚠️ يرجى إدخال نص أو اختيار ملف للترجمة")
@@ -1904,7 +1974,7 @@ with tab5:
         
         if selected_files:
             # إنشاء علامات تبويب للملفات المختارة
-            analysis_tabs = st.tabs([f"📄 {f}" for f in selected_files])
+            analysis_tabs = st.tabs(selected_files)
             
             for i, file in enumerate(selected_files):
                 with analysis_tabs[i]:
@@ -1946,7 +2016,7 @@ with tab5:
                             st.dataframe(df, use_container_width=True)
                         
                     # تحليل الموضوعات (محسن)
-                    if st.button(f"🔍 تحليل موضوعات {file}", key=f"topic_{i}"):
+                    if st.button(f"تحليل موضوعات {file}", icon=":material/analytics:", key=f"topic_{i}"):
                         with st.spinner("جاري تحليل الموضوعات..."):
                             analysis_text, total_w = get_text_by_words(txt, max_words=2000, strategy="smart")
                             topic_prompt = f"""أنت محلل محتوى خبير. حلل النص التالي واستخرج الموضوعات الرئيسية.
@@ -1971,33 +2041,30 @@ with tab5:
                             
                             try:
                                 topics = st.session_state.rag_engine.llm.invoke(topic_prompt, feature="topics")
-                                st.markdown(topics)
+                                render_result_card("analytics", "تحليل الموضوعات", topics, file)
                             except Exception:
                                 st.error("تعذر تحليل الموضوعات بالذكاء الاصطناعي الآن. حاول مرة أخرى.")
     else:
-        st.info("📁 لم يتم معالجة أي ملفات بعد. قم برفع ملفات PDF للتحليل.")
+        render_empty_state("analytics", "لا يوجد مستند للتحليل", "ارفع مستنداً أو اختر مستنداً جاهزاً لبدء التحليل.")
 
 # --- TAB 6: الخرائط الذهنية ---
 with tab6:
     st.header("الخريطة الذهنية")
     st.caption("حوّل الأفكار والعلاقات إلى خريطة سهلة الاستكشاف.")
     st.markdown("""
-    <div style='background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
-                padding: 16px 20px; border-radius: 12px; margin-bottom: 16px;'>
-        <h4 style='color:white; margin:0'>🌟 مدعوم بـ markmap.js + D3.js</h4>
-        <p style='color:#e9d8fd; margin:4px 0 0 0; font-size:13px'>
-        زوم ✦ طي/توسيع الفروع ✦ تصدير HTML تفاعلي ✦ ألوان تلقائية جميلة
-        </p>
+    <div class="capability-note" dir="rtl">
+        <span class="material-symbols-rounded" aria-hidden="true">hub</span>
+        <div><strong>عرض تفاعلي</strong><small>تكبير، طي الفروع، وتصدير HTML تفاعلي.</small></div>
     </div>
     """, unsafe_allow_html=True)
     
     col_src, col_cfg = st.columns([3, 1])
 
     with col_cfg:
-        with st.expander("⚙️ إعدادات الخريطة", expanded=True):
+        with st.expander("إعدادات الخريطة", expanded=True, icon=":material/tune:"):
             viz_mode = st.radio(
-                "🎨 طريقة العرض:",
-                ["🌿 markmap (الأفضل)", "🔵 D3.js دائري", "📊 Plotly شبكي"],
+                "طريقة العرض:",
+                ["markmap (الأفضل)", "D3.js دائري", "Plotly شبكي"],
                 index=0,
                 help="markmap: خريطة تفاعلية كاملة\nD3: شجرة دائرية احترافية\nPlotly: تقليدي"
             )
@@ -2007,14 +2074,14 @@ with tab6:
     with col_src:
         input_mode = st.radio(
             "مصدر النص:",
-            ["📄 من ملف مرفوع", "✏️ إدخال نص مباشر"],
+            ["من ملف مرفوع", "إدخال نص مباشر"],
             horizontal=True
         )
 
         src_text_mm = ""
         selected_mm_file = None
 
-        if input_mode == "📄 من ملف مرفوع":
+        if input_mode == "من ملف مرفوع":
             if st.session_state.last_full_text:
                 selected_mm_file = st.selectbox(
                     "اختر الملف:",
@@ -2022,7 +2089,7 @@ with tab6:
                     key="mindmap_file_select_v2"
                 )
             else:
-                st.info("📁 قم برفع ملفات PDF أولاً")
+                render_empty_state("hub", "لا يوجد مستند للخريطة", "ارفع مستنداً أو أدخل نصاً لبناء خريطة ذهنية.")
         else:
             src_text_mm = st.text_area(
                 "أدخل النص:",
@@ -2040,8 +2107,9 @@ with tab6:
         render_mode = "plotly"
 
     generate_btn = st.button(
-        "✨ توليد الخريطة الذهنية",
+        "توليد الخريطة الذهنية",
         type="primary",
+        icon=":material/hub:",
         use_container_width=True,
         key="generate_mindmap_v2"
     )
@@ -2050,16 +2118,16 @@ with tab6:
         if selected_mm_file:
             src_text_mm = get_file_content_safe(selected_mm_file)
         if not src_text_mm or len(src_text_mm.strip()) < 50:
-            st.warning("⚠️ النص قصير جداً أو فارغ.")
+            st.warning("النص قصير جداً أو فارغ.")
         elif not st.session_state.rag_engine:
-            st.error("❌ يرجى تفعيل المحرك أولاً")
+            st.error("مساحة العمل غير جاهزة. هيّئها أولاً.")
         else:
             with st.spinner("🔄 جاري تحليل النص وبناء الخريطة الذهنية..."):
                 key_name = selected_mm_file or "direct_input"
                 mindmap_data = create_mindmap_from_text(src_text_mm, min_nodes)
                 if mindmap_data:
                     st.session_state.mindmaps[key_name] = {"data": mindmap_data, "mode": render_mode, "height": map_height}
-                    st.success("✅ تم توليد الخريطة الذهنية بنجاح!")
+                    st.success("تم توليد الخريطة الذهنية بنجاح.")
                     st.rerun()
 
     # عرض الخريطة إذا وجدت
@@ -2067,7 +2135,7 @@ with tab6:
     if key_name in st.session_state.mindmaps:
         saved = st.session_state.mindmaps[key_name]
         mindmap_data = saved["data"]
-        viz_tab1, viz_tab2, viz_tab3 = st.tabs(["🗺️ الخريطة التفاعلية", "📝 المخطط النصي", "📥 تصدير"])
+        viz_tab1, viz_tab2, viz_tab3 = st.tabs(["الخريطة التفاعلية", "المخطط النصي", "التصدير"])
 
         with viz_tab1:
             # استخدام الـ Markdown الهرمي المحفوظ مباشرة مع markmap.js (أسرع وأوضح)
@@ -2119,7 +2187,7 @@ setTimeout(() => mm.fit(), 400);
                 st.markdown("### 🗂️ الخريطة الهرمية النصية")
                 st.code(raw_md, language="markdown")
             text_mindmap = create_text_mindmap(mindmap_data)
-            st.markdown(text_mindmap)
+            render_result_card("hub", "الخريطة النصية", text_mindmap, key_name)
 
         with viz_tab3:
             st.markdown("### 📥 تصدير الخريطة")
@@ -2184,23 +2252,23 @@ with tab7:
         
         with web_col1:
             web_query = st.text_input(
-                "🔍 ابحث في الإنترنت:",
+                "موضوع البحث",
                 placeholder="اكتب موضوع البحث الأكاديمي...",
                 key="web_search_input"
             )
         
         with web_col2:
             web_category = st.selectbox(
-                "📂 التصنيف:",
+                "التصنيف",
                 ["أكاديمي", "عام", "أخبار", "ويكيبيديا"],
                 key="web_search_category"
             )
         
         web_max_results = st.slider("عدد النتائج:", 5, 20, 10, key="web_max_results")
         
-        if st.button("🌐 بحث", type="primary", use_container_width=True, key="web_search_btn"):
+        if st.button("بحث", type="primary", icon=":material/search:", use_container_width=True, key="web_search_btn"):
             if web_query:
-                with st.spinner("🔍 جاري البحث في الإنترنت..."):
+                with st.spinner("جاري البحث في المصادر الأكاديمية..."):
                     results = web_search_engine.search(
                         web_query,
                         category=web_category,
@@ -2208,7 +2276,7 @@ with tab7:
                     )
                     
                     if results["success"]:
-                        st.success(f"✅ تم العثور على {results['total']} نتيجة")
+                        st.success(f"تم العثور على {results['total']} نتيجة.")
                         
                         for i, result in enumerate(results["results"], 1):
                             with st.expander(f"{i}. {result['title']}", expanded=(i <= 3)):
@@ -2239,7 +2307,7 @@ with tab7:
                         # دمج مع RAG
                         if st.session_state.rag_engine and results["results"]:
                             st.markdown("---")
-                            if st.button("🧠 تحليل النتائج بالذكاء الاصطناعي", key="analyze_web_results"):
+                            if st.button("تحليل النتائج بالذكاء الاصطناعي", icon=":material/auto_awesome:", key="analyze_web_results"):
                                 combined_text = "\n\n".join([f"{r['title']}: {r.get('content', '')}" for r in results["results"][:5]])
                                 with st.spinner("جاري التحليل..."):
                                     try:
@@ -2247,11 +2315,11 @@ with tab7:
                                             f"لخص وحلل النتائج التالية من بحث الإنترنت حول '{web_query}' باللغة العربية:\n\n{combined_text[:4000]}",
                                             feature="web_summary",
                                         )
-                                        st.markdown(summary)
+                                        render_result_card("auto_awesome", "تحليل نتائج الويب", summary, web_query)
                                     except Exception:
                                         st.error("تعذر تلخيص نتائج الويب بالذكاء الاصطناعي الآن.")
                     else:
-                        st.error(f"❌ {results['error']}")
+                        st.error(results['error'])
             else:
                 st.warning("اكتب نص البحث أولاً")
     else:
@@ -2260,3 +2328,6 @@ with tab7:
 
 # تذييل هادئ بلا تفاصيل تشغيلية.
 st.caption("مساحة البحث الأكاديمي الذكية")
+
+if not st.session_state.tour_seen:
+    show_guided_tour()
