@@ -596,6 +596,13 @@ def render_indexing_job_status():
             st.error(status.get("message", "تعذر إكمال الفهرسة."))
             st.session_state.tour_index_error = True
 
+        # A fragment rerun updates only this status card. When a job reaches a
+        # terminal state, refresh the whole sidebar once so the primary button
+        # cannot remain labelled "running" beside a completed-job message.
+        if state not in {"queued", "running"} and st.session_state.get("indexing_terminal_sync") != job_id:
+            st.session_state.indexing_terminal_sync = job_id
+            st.rerun(scope="app")
+
     if hasattr(st, "fragment"):
         @st.fragment(run_every="2s")
         def live_status_fragment():
@@ -638,6 +645,7 @@ def start_background_indexing(uploaded_files):
         st.info("هناك مهمة فهرسة أخرى تعمل الآن. تابع نسبة التقدم الظاهرة قبل بدء مهمة جديدة.")
         return
     st.session_state.indexing_job_id = job_id
+    st.session_state.indexing_terminal_sync = ""
     st.session_state.tour_index_error = False
     st.session_state.tour_index_completed = False
     st.query_params["index_job"] = job_id
