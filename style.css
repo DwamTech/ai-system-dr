@@ -588,12 +588,46 @@ label,
     display: none;
 }
 
+.st-key-tour_coach {
+    position: fixed;
+    z-index: 10003;
+    width: min(370px, calc(100vw - 2rem));
+    padding: 1rem 1rem .9rem;
+    color: var(--text);
+    background: #17212c;
+    border: 1px solid rgba(91, 140, 255, .65) !important;
+    border-radius: var(--radius-lg);
+    box-shadow: 0 22px 64px rgba(0, 0, 0, .48), 0 0 0 1px rgba(91, 140, 255, .12);
+    direction: rtl;
+}
+
+/* Streamlit may retain the previous widget row until a long rerun completes. */
+body:has(.tour-inactive) .st-key-tour_coach,
+body:has(.tour-step-5) .st-key-tour_coach [data-testid="stHorizontalBlock"]:has(.st-key-tour_next_chat_tools [data-testid="stBaseButton-secondary"]) {
+    display: none !important;
+}
+
+body:has(.tour-step-1) .st-key-tour_coach [data-testid="stHorizontalBlock"]:has(button):not(:has(.st-key-tour_next_1)),
+body:has(.tour-step-2) .st-key-tour_coach [data-testid="stHorizontalBlock"]:has(button):not(:has(.st-key-tour_next_2)),
+body:has(.tour-step-3) .st-key-tour_coach [data-testid="stHorizontalBlock"]:has(button):not(:has(.st-key-tour_next_3)),
+body:has(.tour-step-4) .st-key-tour_coach [data-testid="stHorizontalBlock"]:has(button):not(:has(.st-key-tour_next_chat_tools)),
+body:has(.tour-step-4) .st-key-tour_coach [data-testid="stHorizontalBlock"]:has(.st-key-tour_next_chat_tools [data-testid="stBaseButton-primary"]),
+body:has(.tour-step-5) .st-key-tour_coach [data-testid="stHorizontalBlock"]:has(button):not(:has(.st-key-tour_next_chat_tools)) {
+    display: none !important;
+}
+
+body:has(.tour-step-1) .st-key-tour_coach { top: 5.5rem; right: clamp(2rem, 25vw, 23rem); }
+body:has(.tour-step-2) .st-key-tour_coach { top: 15rem; right: clamp(2rem, 25vw, 23rem); }
+body:has(.tour-step-3) .st-key-tour_coach { top: 24rem; right: 3rem; }
+body:has(.tour-step-4) .st-key-tour_coach { top: 5.5rem; right: 3rem; }
+body:has(.tour-step-5) .st-key-tour_coach { right: 3rem; bottom: 2.5rem; }
+
 .tour-card {
-    padding: .2rem 0 .45rem;
+    padding: 0 0 .3rem;
 }
 
 .tour-card h3 {
-    margin: 1.15rem 0 .4rem;
+    margin: .85rem 0 .3rem;
     font-size: 1.18rem;
 }
 
@@ -613,6 +647,20 @@ label,
     border-radius: 999px;
 }
 
+.tour-card__eyebrow {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    color: var(--text-muted);
+    font-size: .76rem;
+}
+
+.tour-card__eyebrow span {
+    color: var(--primary-hover);
+    font-weight: 700;
+}
+
 .tour-progress b {
     position: absolute;
     inset: 0 auto 0 0;
@@ -630,15 +678,28 @@ label,
     font-size: .74rem;
 }
 
-body:has(.tour-step-1) [data-testid="stFileUploader"],
-body:has(.tour-step-2) .workflow-step:nth-child(2),
-body:has(.tour-step-3) .document-context,
-body:has(.tour-step-4) [data-testid="stChatInput"],
-body:has(.tour-step-5) .stTabs [role="tablist"] {
+body:has(.tour-step-1) .st-key-tour_target_upload [data-testid="stFileUploader"],
+body:has(.tour-step-2) .st-key-tour_target_index,
+body:has(.tour-step-3) .st-key-active_document_selector,
+body:has(.tour-step-4) .st-key-tour_target_chat,
+body:has(.tour-step-5) .st-key-tour_target_tools [role="tablist"] {
     position: relative;
-    z-index: 1001;
-    border-color: var(--primary);
-    box-shadow: 0 0 0 3px rgba(91, 140, 255, .22), 0 18px 44px rgba(0, 0, 0, .3);
+    z-index: 10002;
+    opacity: 1 !important;
+    background: var(--surface-elevated);
+    border-color: var(--primary) !important;
+    border-radius: var(--radius-md);
+    box-shadow:
+        0 0 0 3px var(--primary),
+        0 0 0 7px rgba(91, 140, 255, .22),
+        0 0 0 9999px rgba(4, 8, 14, .7),
+        0 18px 44px rgba(0, 0, 0, .32);
+}
+
+body:has(.tour-step-1) .st-key-tour_target_upload [data-testid="stFileUploader"],
+body:has(.tour-step-2) .st-key-tour_target_index,
+body:has(.tour-step-3) .st-key-active_document_selector {
+    isolation: isolate;
 }
 
 .st-key-clear_index_danger button {
@@ -742,6 +803,26 @@ body:has(.tour-step-5) .stTabs [role="tablist"] {
     .stTabs [data-baseweb="tab"] {
         min-height: 44px;
         padding: 0 .75rem;
+    }
+
+    body:not(:has(.tour-step-4)) .st-key-tour_coach {
+        inset: auto 1rem max(1rem, env(safe-area-inset-bottom)) 1rem;
+        width: auto;
+        max-height: min(46vh, 390px);
+        overflow-y: auto;
+    }
+
+    body:has(.tour-step-4) .st-key-tour_coach {
+        inset: calc(3.75rem + env(safe-area-inset-top)) 1rem auto 1rem;
+        width: auto;
+        max-height: min(44vh, 380px);
+        overflow-y: auto;
+    }
+
+    body:has(.tour-step-1) .st-key-tour_coach .tour-card p::after,
+    body:has(.tour-step-2) .st-key-tour_coach .tour-card p::after,
+    body:has(.tour-step-3) .st-key-tour_coach .tour-card p::after {
+        content: " على الهاتف، افتح قائمة المستندات لتنفيذ الخطوة.";
     }
 }
 

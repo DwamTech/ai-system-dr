@@ -171,10 +171,26 @@ if "processing_mode" not in st.session_state:
     st.session_state.processing_mode = "تلقائي"
 if "force_ocr" not in st.session_state:
     st.session_state.force_ocr = False
-if "tour_seen" not in st.session_state:
-    st.session_state.tour_seen = False
+if "tour_active" not in st.session_state:
+    st.session_state.tour_active = True
 if "tour_step" not in st.session_state:
-    st.session_state.tour_step = 0
+    st.session_state.tour_step = 1
+if "tour_completed" not in st.session_state:
+    st.session_state.tour_completed = False
+if "tour_manual_restart" not in st.session_state:
+    st.session_state.tour_manual_restart = False
+if "tour_last_completed_step" not in st.session_state:
+    st.session_state.tour_last_completed_step = 0
+if "tour_index_completed" not in st.session_state:
+    st.session_state.tour_index_completed = False
+if "tour_index_error" not in st.session_state:
+    st.session_state.tour_index_error = False
+if "tour_confirmation" not in st.session_state:
+    st.session_state.tour_confirmation = ""
+if "tour_hold_step_once" not in st.session_state:
+    st.session_state.tour_hold_step_once = False
+if "tour_pending_prompt" not in st.session_state:
+    st.session_state.tour_pending_prompt = ""
 
 def load_indexed_files_from_db():
     """تحميل قائمة الملفات المفهرسة من قاعدة البيانات"""
@@ -517,15 +533,27 @@ def render_product_header():
     )
 
 
+def derive_workflow_step(uploaded_files):
+    """Return the permanent product step from the same facts used by onboarding."""
+    if st.session_state.tour_active:
+        return max(1, min(5, st.session_state.tour_step))
+    if st.session_state.messages:
+        return 5
+    if st.session_state.active_document:
+        return 4
+    if st.session_state.tour_index_completed or st.session_state.indexed_files:
+        return 3
+    if uploaded_files:
+        return 2
+    return 1
+
+
 def render_workflow_steps(uploaded_files):
-    has_uploaded = bool(uploaded_files)
-    has_indexed = bool(st.session_state.indexed_files or st.session_state.last_full_text)
-    has_used_tool = bool(st.session_state.messages)
-    current_step = 4 if has_indexed else 2 if has_uploaded else 1
+    current_step = derive_workflow_step(uploaded_files)
     labels = ["رفع المستند", "الفهرسة", "اختيار النطاق", "استخدام الأدوات"]
     steps = []
     for number, label in enumerate(labels, 1):
-        is_complete = number < current_step or (number == 4 and has_used_tool)
+        is_complete = number < current_step
         state = "is-complete" if is_complete else "is-active" if number == current_step else ""
         marker = '<i class="material-symbols-rounded">check</i>' if is_complete else str(number)
         steps.append(
@@ -587,60 +615,117 @@ def render_result_card(icon_name, title, content, context=None):
         st.markdown(content)
 
 
-TOUR_STEPS = [
-    ("رفع المستندات", "ابدأ برفع ملف PDF أو أكثر. يمكنك بعد ذلك تجهيز الملفات للبحث والتحليل."),
-    ("الفهرسة", "بعد رفع المستندات، ابدأ الفهرسة حتى يستطيع النظام البحث داخل محتواها."),
-    ("المستند النشط", "اختر المستند الذي تريد العمل عليه، أو استخدم نطاق كل المستندات للبحث العام."),
-    ("المحادثة", "اسأل أي سؤال عن المستند المحدد، وسيستخدم النظام محتواه لبناء الإجابة."),
-    ("أدوات المستند", "استخدم التلخيص، الكيانات، الترجمة، التحليل، الخريطة الذهنية، والبحث الأكاديمي عند الحاجة."),
-]
+TOUR_STEPS = {
+    1: ("رفع المستندات", "ابدأ برفع ملف PDF أو أكثر. سننتقل تلقائيًا للخطوة التالية بعد اختيار الملفات."),
+    2: ("فهرسة المستند", "الملفات جاهزة. ابدأ الفهرسة حتى يستطيع النظام البحث داخل محتواها."),
+    3: ("المستند النشط", "اختر المستند الذي تريد العمل عليه. ستكون الإجابات والتحليلات مرتبطة بالمستند المحدد."),
+    4: ("ابدأ المحادثة", "اسأل الآن أي سؤال عن المستند المحدد. سيستخدم النظام محتوى هذا المستند للإجابة."),
+    5: ("أدوات المستند", "أصبح المستند جاهزًا. يمكنك الآن استخدام التلخيص، الكيانات، الترجمة، التحليل، الخريطة الذهنية، والبحث الأكاديمي."),
+}
 
 
-def dismiss_tour():
-    st.session_state.tour_seen = True
-    st.session_state.tour_step = 0
+def end_tour(completed=False):
+    st.session_state.tour_active = False
+    st.session_state.tour_completed = completed
+    st.session_state.tour_manual_restart = False
+    if completed:
+        st.session_state.tour_last_completed_step = 5
 
 
-@st.dialog(
-    "جولة تعريفية",
-    width="small",
-    dismissible=True,
-    icon=":material/explore:",
-    on_dismiss=dismiss_tour,
-)
-def show_guided_tour():
+def restart_tour():
+    st.session_state.tour_active = True
+    st.session_state.tour_step = 1
+    st.session_state.tour_completed = False
+    st.session_state.tour_manual_restart = True
+    st.session_state.tour_last_completed_step = 0
+    st.session_state.tour_index_completed = False
+    st.session_state.tour_index_error = False
+    st.session_state.tour_confirmation = ""
+    st.session_state.tour_hold_step_once = True
+
+
+def sync_tour_with_actions(uploaded_files):
+    """Advance at most one action-driven step during a normal Streamlit rerun."""
+    if not st.session_state.tour_active:
+        return
+    if st.session_state.tour_hold_step_once:
+        st.session_state.tour_hold_step_once = False
+        return
     step = st.session_state.tour_step
+    if step == 1 and uploaded_files:
+        st.session_state.tour_last_completed_step = 1
+        st.session_state.tour_step = 2
+        st.session_state.tour_confirmation = "تم اختيار الملفات."
+    elif step == 2 and st.session_state.tour_index_completed:
+        st.session_state.tour_last_completed_step = 2
+        st.session_state.tour_step = 3
+        st.session_state.tour_confirmation = "تمت الفهرسة بنجاح."
+    elif step == 3 and st.session_state.active_document:
+        st.session_state.tour_last_completed_step = 3
+        st.session_state.tour_step = 4
+        st.session_state.tour_confirmation = "تم تحديد المستند النشط."
+
+
+def render_guided_tour():
+    """Render a non-modal floating coach card; the real highlighted control stays primary."""
+    if not st.session_state.tour_active:
+        with st.container(key="tour_coach"):
+            st.markdown('<span class="tour-inactive"></span>', unsafe_allow_html=True)
+        return
+    step = max(1, min(5, st.session_state.tour_step))
     title, description = TOUR_STEPS[step]
-    st.markdown(f'<span class="tour-marker tour-step-{step + 1}"></span>', unsafe_allow_html=True)
-    st.markdown(
-        f"""
-        <div class="tour-card" dir="rtl">
-            <div class="tour-progress"><span>الخطوة {step + 1} من {len(TOUR_STEPS)}</span><b style="width:{(step + 1) * 20}%"></b></div>
-            <h3>{title}</h3>
-            <p>{description}</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    previous_col, skip_col, next_col = st.columns([1, 1.25, 1])
-    with previous_col:
-        if st.button("السابق", disabled=step == 0, use_container_width=True, icon=":material/arrow_forward:"):
-            st.session_state.tour_step -= 1
-            st.rerun()
-    with skip_col:
-        if st.button("تخطي الجولة", type="tertiary", use_container_width=True):
-            dismiss_tour()
-            st.rerun()
-    with next_col:
-        final_step = step == len(TOUR_STEPS) - 1
-        label = "ابدأ الآن" if final_step else "التالي"
-        icon = ":material/check:" if final_step else ":material/arrow_back:"
-        if st.button(label, type="primary", use_container_width=True, icon=icon):
-            if final_step:
-                dismiss_tour()
-            else:
-                st.session_state.tour_step += 1
-            st.rerun()
+    # Share widget identity only across the chat→tools hand-off. That transition
+    # happens before a potentially slow provider call, so the old controls must
+    # be replaced immediately; other steps retain independent navigation state.
+    control_key = "chat_tools" if step in (4, 5) else str(step)
+    with st.container(key="tour_coach", border=True):
+        st.markdown(f'<span class="tour-marker tour-step-{step}"></span>', unsafe_allow_html=True)
+        st.markdown(
+            f"""
+            <div class="tour-card" dir="rtl">
+                <div class="tour-card__eyebrow"><span>جولة تعريفية</span><b>الخطوة {step} من 5</b></div>
+                <div class="tour-progress"><b style="width:{step * 20}%"></b></div>
+                <h3>{title}</h3><p>{description}</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if st.session_state.tour_confirmation:
+            st.caption(st.session_state.tour_confirmation)
+            st.session_state.tour_confirmation = ""
+        if step == 2 and st.session_state.tour_index_error:
+            st.caption("لم تكتمل الفهرسة. راجع رسالة الحالة ثم حاول مرة أخرى.")
+        if step < 5:
+            st.caption("نفّذ الخطوة المضاءة للمتابعة تلقائيًا.")
+        previous_col, skip_col, next_col = st.columns([1, 1.3, 1])
+        with previous_col:
+            if st.button("السابق", disabled=step == 1, use_container_width=True, key=f"tour_previous_{control_key}"):
+                st.session_state.tour_step = step - 1
+                st.session_state.tour_hold_step_once = True
+                st.rerun()
+        with skip_col:
+            st.button(
+                "تخطي الجولة",
+                type="tertiary",
+                use_container_width=True,
+                key=f"tour_skip_{control_key}",
+                on_click=end_tour,
+                args=(False,),
+            )
+        with next_col:
+            label = "إنهاء الجولة" if step == 5 else "التالي"
+            completed_real_action = (
+                (step == 1 and bool(st.session_state.get("tour_target_upload")))
+                or (step == 2 and st.session_state.tour_index_completed)
+            )
+            manual_next_allowed = step >= 3 or completed_real_action
+            if st.button(label, type="primary" if step == 5 else "secondary", disabled=not manual_next_allowed, use_container_width=True, key=f"tour_next_{control_key}"):
+                if step == 5:
+                    end_tour(True)
+                else:
+                    st.session_state.tour_step = step + 1
+                    st.session_state.tour_hold_step_once = True
+                st.rerun()
 
 
 @st.dialog("الإعدادات", width="large", icon=":material/settings:")
@@ -753,8 +838,7 @@ def show_archive_dialog():
 def show_support_dialog():
     st.markdown("ارفع ملفات PDF، ابدأ الفهرسة، اختر نطاق العمل، ثم استخدم المحادثة أو إحدى الأدوات.")
     if st.button("إعادة الجولة التعريفية", icon=":material/replay:", use_container_width=True):
-        st.session_state.tour_seen = False
-        st.session_state.tour_step = 0
+        restart_tour()
         st.rerun()
     with st.form("support_form_optimized"):
         rating = st.select_slider("تقييم التجربة", options=[1, 2, 3, 4, 5], value=5)
@@ -813,7 +897,8 @@ with st.sidebar:
         "ارفع المستندات",
         type=["pdf"],
         accept_multiple_files=True,
-        help="يمكنك رفع عدة ملفات PDF مرة واحدة"
+        help="يمكنك رفع عدة ملفات PDF مرة واحدة",
+        key="tour_target_upload",
     )
     
     if uploaded_files:
@@ -834,7 +919,8 @@ with st.sidebar:
             )
         force_ocr = st.session_state.force_ocr
     
-    if uploaded_files and st.button("بدء الفهرسة", type="primary", icon=":material/auto_awesome_motion:", use_container_width=True):
+    if uploaded_files and st.button("بدء الفهرسة", type="primary", icon=":material/auto_awesome_motion:", use_container_width=True, key="tour_target_index"):
+        st.session_state.tour_index_error = False
         if not st.session_state.rag_engine:
             with st.spinner("جاري تجهيز مساحة العمل..."):
                 initialize_workspace()
@@ -851,6 +937,8 @@ with st.sidebar:
 
             if not valid_files:
                 st.error("لم يوجد ملف PDF صالح للفهرسة. تحقق من الملفات ثم حاول مرة أخرى.")
+                st.session_state.tour_index_error = True
+                render_guided_tour()
                 st.stop()
 
             uploaded_files = valid_files
@@ -965,6 +1053,9 @@ with st.sidebar:
                 
                 # عرض النتائج
                 indexed_count = len(all_results)
+                indexed_names = [getattr(file, "name", str(file)) for file in uploaded_files]
+                st.session_state.indexed_files = list(dict.fromkeys(st.session_state.indexed_files + indexed_names))
+                st.session_state.tour_index_completed = True
                 st.success(f"تمت فهرسة {indexed_count} ملف بنجاح.")
                 if process_method == "متوازي (مناسب لملفات متعددة)":
                     for result in failed_results:
@@ -983,11 +1074,12 @@ with st.sidebar:
                         st.metric("⏱️ وقت الفهرسة الإجمالي", f"{total_time:.1f} ثانية")
                         st.metric("⚡ متوسط الوقت لكل ملف", f"{total_time/indexed_count:.1f} ثانية")
                 
-                # إعادة تحميل الصفحة بعد 2 ثانية
-                time.sleep(2)
+                # مهلة قصيرة لتأكيد النجاح قبل متابعة الجولة.
+                time.sleep(0.8)
                 st.rerun()
                 
             except Exception:
+                st.session_state.tour_index_error = True
                 st.error("تعذر إكمال الفهرسة. تحقق من اتصال خدمة الفهرسة ومن صحة ملفات PDF ثم حاول مرة أخرى.")
                 placeholder.empty()
     
@@ -1003,20 +1095,23 @@ with st.sidebar:
 # 4. المحتوى الرئيسي
 # ==========================================
 
+sync_tour_with_actions(uploaded_files)
 render_product_header()
 render_workflow_steps(uploaded_files)
 render_document_context()
+render_guided_tour()
 
 # تبويبات الواجهة
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
-    ":material/chat: المحادثة",
-    ":material/summarize: الملخص",
-    ":material/label: الكيانات",
-    ":material/translate: الترجمة",
-    ":material/analytics: التحليل",
-    ":material/hub: الخريطة الذهنية",
-    ":material/menu_book: البحث الأكاديمي"
-])
+with st.container(key="tour_target_tools"):
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+        ":material/chat: المحادثة",
+        ":material/summarize: الملخص",
+        ":material/label: الكيانات",
+        ":material/translate: الترجمة",
+        ":material/analytics: التحليل",
+        ":material/hub: الخريطة الذهنية",
+        ":material/menu_book: البحث الأكاديمي"
+    ])
 
 # --- TAB 1: البحث الذكي ---
 with tab1:
@@ -1111,11 +1206,23 @@ with tab1:
         if st.button("إرسال النص الصوتي", icon=":material/arrow_upward:"):
             voice_prompt = st.session_state.voice_text
 
-    typed_prompt = st.chat_input("اسأل أي سؤال عن المستند المحدد...")
-    prompt = typed_prompt or voice_prompt
+    typed_prompt = st.chat_input("اسأل أي سؤال عن المستند المحدد...", key="tour_target_chat")
+    pending_prompt = st.session_state.tour_pending_prompt
+    prompt = typed_prompt or voice_prompt or pending_prompt
     # مسح النص الصوتي بعد الاستخدام
     if prompt and st.session_state.voice_text:
-        st.session_state.voice_text = ""    
+        st.session_state.voice_text = ""
+
+    # انتقل بصرياً إلى خطوة الأدوات قبل بدء طلب المزود البطيء، ثم عالج
+    # السؤال المحفوظ في إعادة التشغيل التالية كي لا تبقى بطاقة المحادثة قديمة.
+    if prompt and not pending_prompt and st.session_state.tour_active and st.session_state.tour_step == 4:
+        st.session_state.tour_pending_prompt = prompt
+        st.session_state.tour_last_completed_step = 4
+        st.session_state.tour_step = 5
+        st.session_state.tour_confirmation = "تم إرسال سؤالك."
+        st.rerun()
+    if pending_prompt:
+        st.session_state.tour_pending_prompt = ""
     # عرض سجل المحادثة
     if st.session_state.messages:
         for msg in st.session_state.messages[-5:]:
@@ -1130,7 +1237,6 @@ with tab1:
     if prompt:
         # إضافة الاستعلام إلى سجل المحادثة
         st.session_state.messages.append({"role": "user", "content": prompt})
-        
         with st.chat_message("user"):
             st.markdown(prompt)
         
@@ -2328,6 +2434,3 @@ with tab7:
 
 # تذييل هادئ بلا تفاصيل تشغيلية.
 st.caption("مساحة البحث الأكاديمي الذكية")
-
-if not st.session_state.tour_seen:
-    show_guided_tour()
