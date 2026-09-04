@@ -490,6 +490,28 @@ label,
     border-radius: var(--radius-md);
 }
 
+/* Keep the two sides of the conversation visually distinct at a glance. */
+[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) {
+    background: linear-gradient(135deg, rgba(39, 82, 160, .34), rgba(21, 39, 66, .82));
+    border-color: rgba(91, 140, 255, .62);
+    border-right: 3px solid var(--primary);
+    box-shadow: 0 5px 18px rgba(22, 52, 104, .16);
+}
+
+[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarAssistant"]) {
+    background: linear-gradient(135deg, rgba(17, 31, 40, .98), rgba(18, 27, 35, .96));
+    border-color: #304454;
+    border-right: 3px solid var(--success);
+}
+
+[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) [data-testid="stChatMessageAvatarUser"] {
+    background: var(--primary-hover);
+}
+
+[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarAssistant"]) [data-testid="stChatMessageAvatarAssistant"] {
+    background: #23875f;
+}
+
 [data-testid="stChatMessageContent"] p,
 [data-testid="stChatMessageContent"] li,
 [data-testid="stChatMessageContent"] h1,
