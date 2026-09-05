@@ -142,6 +142,27 @@ body,
     border-color: var(--border);
 }
 
+.sidebar-upload-context {
+    margin: 1.1rem 0 .55rem;
+}
+
+.sidebar-upload-context strong,
+.sidebar-upload-context span {
+    display: block;
+}
+
+.sidebar-upload-context strong {
+    color: var(--text);
+    font-size: .92rem;
+}
+
+.sidebar-upload-context span {
+    margin-top: .15rem;
+    color: var(--text-muted);
+    font-size: .76rem;
+    line-height: 1.6;
+}
+
 .sidebar-brand {
     display: flex;
     align-items: center;
@@ -958,5 +979,366 @@ body:has(.tour-step-3) .st-key-active_document_selector {
 
     .product-header p {
         font-size: .9rem;
+    }
+}
+
+/* Final Arabic-first layout and conversation workspace refinement. */
+:root {
+    --sidebar-width: 300px;
+    --content-gutter: clamp(1rem, 3vw, 2.5rem);
+    --chat-reading-width: 62rem;
+}
+
+[data-testid="stMainBlockContainer"],
+.stMainBlockContainer,
+.block-container {
+    max-width: 1160px;
+    padding-right: var(--content-gutter);
+    padding-left: var(--content-gutter);
+}
+
+/* Native Streamlit layout: reverse the real flex rail only on desktop. The
+   sidebar remains an ordinary collapsible drawer on narrower displays. */
+@media (min-width: 769px) {
+    [data-testid="stAppViewContainer"] {
+        flex-direction: row-reverse;
+    }
+
+    [data-testid="stSidebar"] {
+        border-right: 1px solid var(--border);
+        border-left: 0;
+    }
+
+    [data-testid="stSidebarCollapsedControl"] {
+        right: .8rem;
+        left: auto;
+    }
+
+    /* Streamlit 1.63 mounts the collapsed-state reopen action in the header. */
+    [data-testid="stHeader"] [data-testid="stExpandSidebarButton"] {
+        position: fixed !important;
+        top: .5rem;
+        right: .8rem;
+        left: auto;
+        z-index: 1001;
+    }
+
+    /* The coach sits in the workspace, never over the right document rail. */
+    body:has(.tour-step-1) .st-key-tour_coach,
+    body:has(.tour-step-2) .st-key-tour_coach,
+    body:has(.tour-step-3) .st-key-tour_coach,
+    body:has(.tour-step-4) .st-key-tour_coach {
+        right: calc(var(--sidebar-width) + 3rem);
+        left: auto;
+    }
+
+    body:has(.tour-step-5) .st-key-tour_coach {
+        right: calc(var(--sidebar-width) + 3rem);
+        left: auto;
+    }
+}
+
+[data-testid="stExpandSidebarButton"] {
+    display: grid !important;
+    width: 42px;
+    height: 42px;
+    min-height: 42px;
+    place-items: center;
+    color: var(--text) !important;
+    background: var(--surface-elevated) !important;
+    border: 1px solid #40536a !important;
+    border-radius: 10px;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, .22);
+    opacity: 1 !important;
+}
+
+[data-testid="stExpandSidebarButton"]:hover,
+[data-testid="stExpandSidebarButton"]:focus-visible {
+    color: #fff !important;
+    background: #21354f !important;
+    border-color: var(--primary) !important;
+    outline: 2px solid rgba(91, 140, 255, .6);
+    outline-offset: 2px;
+}
+
+/* Keep mixed identifiers readable without forcing a bidi override. */
+code,
+pre,
+a[href],
+input[type="email"],
+.chat-source-chip[dir="auto"],
+.chat-workspace__scope b[dir="auto"] {
+    direction: ltr;
+    text-align: left;
+}
+
+.workflow-steps {
+    margin: 1.25rem 0 1rem;
+    direction: rtl;
+}
+
+.workflow-step {
+    justify-content: flex-start;
+}
+
+.document-context {
+    margin-bottom: 1.5rem;
+}
+
+/* One stable chat workspace: header, stream, sources, and composer repeat the
+   same content grid and spacing rhythm without turning every element into a card. */
+.st-key-chat_workspace {
+    max-width: var(--chat-reading-width);
+    margin: 0 auto;
+}
+
+.chat-workspace__header {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 1rem;
+    margin: 1.5rem 0 1rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid rgba(38, 51, 66, .78);
+}
+
+.chat-workspace__header h2 {
+    margin: 0;
+    font-size: clamp(1.45rem, 2.5vw, 1.9rem);
+}
+
+.chat-workspace__header p {
+    margin: .25rem 0 0;
+    color: var(--text-muted);
+    font-size: .92rem;
+}
+
+.chat-workspace__scope {
+    display: flex;
+    align-items: center;
+    gap: .6rem;
+    flex: 0 1 23rem;
+    min-width: 0;
+    padding: .55rem .7rem;
+    color: var(--text-muted);
+    background: rgba(91, 140, 255, .055);
+    border: 1px solid rgba(91, 140, 255, .18);
+    border-radius: var(--radius-sm);
+}
+
+.chat-workspace__scope > .material-symbols-rounded {
+    color: var(--primary-hover);
+}
+
+.chat-workspace__scope small,
+.chat-workspace__scope b {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.chat-workspace__scope small {
+    font-size: .72rem;
+}
+
+.chat-workspace__scope b {
+    margin-top: .08rem;
+    color: var(--text);
+    font-size: .82rem;
+    font-weight: 600;
+}
+
+.st-key-chat_transcript {
+    min-height: min(48vh, 32rem);
+    max-width: var(--chat-reading-width);
+    padding: .25rem 0 1rem;
+}
+
+.st-key-chat_transcript [data-testid="stChatMessage"] {
+    box-sizing: border-box;
+    margin: .75rem 0;
+    padding: 1rem 1.15rem;
+    border: 1px solid rgba(38, 51, 66, .92);
+    border-radius: 14px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, .12);
+}
+
+/* User questions are compact, right-aligned, and subtly primary-tinted. */
+.st-key-chat_transcript [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) {
+    width: fit-content;
+    max-width: 78%;
+    margin-right: 0;
+    margin-left: auto;
+    background: linear-gradient(135deg, rgba(49, 88, 160, .42), rgba(28, 50, 91, .76));
+    border: 0;
+    border-right: 0;
+    box-shadow: 0 7px 20px rgba(22, 52, 104, .18);
+}
+
+.st-key-chat_transcript [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) [data-testid="stChatMessageAvatarUser"] {
+    display: none;
+}
+
+.st-key-chat_transcript [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) [data-testid="stChatMessageContent"] {
+    width: 100%;
+}
+
+/* Assistant answers are neutral reading cards; green remains reserved for success. */
+.st-key-chat_transcript [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarAssistant"]) {
+    width: min(100%, var(--chat-reading-width));
+    margin-right: 0;
+    margin-left: auto;
+    background: linear-gradient(135deg, #141e28, #111921);
+    border-color: rgba(51, 70, 87, .9);
+    border-right: 0;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, .16);
+}
+
+.st-key-chat_transcript [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarAssistant"]) [data-testid="stChatMessageAvatarAssistant"] {
+    width: 28px;
+    height: 28px;
+    min-width: 28px;
+    color: #dbe7ff;
+    background: rgba(91, 140, 255, .22);
+}
+
+.st-key-chat_transcript [data-testid="stChatMessageContent"] {
+    min-width: 0;
+    color: var(--text);
+    line-height: 1.95;
+    unicode-bidi: plaintext;
+}
+
+.st-key-chat_transcript [data-testid="stChatMessageContent"] p {
+    margin: 0 0 .7rem;
+}
+
+.st-key-chat_transcript [data-testid="stChatMessageContent"] p:last-child {
+    margin-bottom: 0;
+}
+
+.chat-sources {
+    margin-top: 1rem;
+    padding-top: .8rem;
+    border-top: 1px solid rgba(67, 87, 106, .62);
+}
+
+.chat-sources__label {
+    display: block;
+    margin-bottom: .5rem;
+    color: var(--text-muted);
+    font-size: .76rem;
+    font-weight: 650;
+}
+
+.chat-sources__list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .45rem;
+}
+
+.chat-source-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: .4rem;
+    min-height: 32px;
+    max-width: 100%;
+    padding: .35rem .6rem;
+    color: #dbe7f4;
+    background: rgba(91, 140, 255, .09);
+    border: 1px solid rgba(91, 140, 255, .22);
+    border-radius: 999px;
+    font-size: .78rem;
+}
+
+.chat-source-chip > span:last-child {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.chat-source-chip .material-symbols-rounded {
+    color: var(--primary-hover);
+    font-size: 1rem;
+}
+
+/* Keep the composer in normal document flow. The native Streamlit input remains
+   at the end of the conversation without ever covering answers or sources. */
+.st-key-tour_target_chat {
+    position: relative;
+    right: auto;
+    left: auto;
+    bottom: auto;
+    width: 100%;
+    max-width: var(--chat-reading-width);
+    margin: 0 auto;
+    padding: 1rem 0 calc(.75rem + env(safe-area-inset-bottom));
+    background: transparent;
+}
+
+[data-testid="stChatInput"] {
+    border-top: 0;
+    background: transparent;
+}
+
+[data-testid="stChatInput"] > div {
+    overflow: hidden;
+    border: 1px solid #40536a;
+    border-radius: 14px;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, .18);
+}
+
+[data-testid="stChatInput"] textarea {
+    min-height: 56px;
+    line-height: 1.75;
+    border: 0;
+    border-radius: 0;
+}
+
+.advanced-analysis-divider {
+    height: 1px;
+    margin: 2rem 0 1rem;
+    background: linear-gradient(90deg, transparent, var(--border) 16%, var(--border) 84%, transparent);
+}
+
+[data-testid="stElementContainer"]:has(.advanced-analysis-divider) + [data-testid="stElementContainer"] [data-testid="stExpander"] {
+    max-width: var(--chat-reading-width);
+    margin: 0 auto;
+    background: rgba(17, 24, 33, .72);
+    border-color: rgba(38, 51, 66, .8);
+}
+
+@media (max-width: 768px) {
+    .stMainBlockContainer,
+    .block-container {
+        padding-right: .85rem;
+        padding-left: .85rem;
+    }
+
+    .chat-workspace__header {
+        align-items: flex-start;
+        flex-direction: column;
+        margin-top: 1.15rem;
+    }
+
+    .chat-workspace__scope {
+        width: 100%;
+        flex-basis: auto;
+    }
+
+    .st-key-chat_transcript {
+        min-height: min(42vh, 26rem);
+    }
+
+    .st-key-chat_transcript [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) {
+        max-width: 88%;
+    }
+
+    .st-key-tour_target_chat {
+        position: relative;
+        right: auto;
+        left: auto;
+        width: 100%;
     }
 }

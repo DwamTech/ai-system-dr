@@ -729,6 +729,65 @@ def render_empty_state(icon_name, title, body):
     )
 
 
+def render_chat_header():
+    """Render the compact, persistent context for the conversation workspace."""
+    active_document = st.session_state.active_document
+    scope = html.escape(active_document or "كل المستندات")
+    scope_icon = "description" if active_document else "library_books"
+    st.markdown(
+        f"""
+        <section class="chat-workspace__header" dir="rtl">
+            <div>
+                <h2>المحادثة</h2>
+                <p>اسأل عن المحتوى، وستظهر الإجابة ومصادرها هنا.</p>
+            </div>
+            <div class="chat-workspace__scope">
+                <span class="material-symbols-rounded" aria-hidden="true">{scope_icon}</span>
+                <span><small>أنت تسأل عن</small><b dir="auto">{scope}</b></span>
+            </div>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_chat_sources(sources, include_scholar_links=False, instance_key=""):
+    """Keep document provenance visually attached to its assistant response."""
+    if not sources:
+        return
+    chips = "".join(
+        (
+            '<span class="chat-source-chip" dir="auto">'
+            '<span class="material-symbols-rounded" aria-hidden="true">description</span>'
+            f'<span>{html.escape(str(source))}</span>'
+            '</span>'
+        )
+        for source in sources[:5]
+    )
+    st.markdown(
+        f"""
+        <footer class="chat-sources" dir="rtl">
+            <span class="chat-sources__label">المصادر</span>
+            <div class="chat-sources__list">{chips}</div>
+        </footer>
+        """,
+        unsafe_allow_html=True,
+    )
+    if len(sources) > 5:
+        st.caption(f"و {len(sources) - 5} مصادر أخرى...")
+    if include_scholar_links:
+        with st.expander("روابط أكاديمية خارجية", expanded=False, icon=":material/open_in_new:"):
+            st.caption("هذه روابط بحث خارجية وليست من أدلة المستند المستخدم في الإجابة.")
+            for index, source in enumerate(sources[:5]):
+                st.link_button(
+                    f"البحث عن {source} في Scholar",
+                    get_scholar_link_cached(source),
+                    icon=":material/open_in_new:",
+                    key=f"chat_scholar_{instance_key}_{index}",
+                    use_container_width=True,
+                )
+
+
 def render_result_card(icon_name, title, content, context=None):
     """Render generated output in one consistent, safe product surface."""
     safe_title = html.escape(title)
@@ -1028,6 +1087,15 @@ with st.sidebar:
     else:
         st.caption("ابدأ برفع ملف PDF أو أكثر.")
 
+    st.markdown(
+        """
+        <div class="sidebar-upload-context" dir="rtl">
+            <strong>رفع المستندات</strong>
+            <span>اسحب ملفات PDF هنا أو اخترها من جهازك</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     uploaded_files = st.file_uploader(
         "ارفع المستندات",
         type=["pdf"],
@@ -1263,22 +1331,24 @@ with st.container(key="tour_target_tools"):
 
 # --- TAB 1: البحث الذكي ---
 with tab1:
-    st.header("المحادثة")
-    st.caption("اطرح سؤالاً عن المحتوى، وستظهر الإجابة ومصادرها هنا.")
+    with st.container(key="chat_workspace"):
+        render_chat_header()
 
-    # Keep the transcript ahead of the composer in the document flow. Writing
-    # new messages back into this container lets the answer appear above the
-    # input instead of pushing the conversation below it after a rerun.
-    chat_feed = st.container(key="chat_transcript")
-    with chat_feed:
-        if st.session_state.messages:
-            for msg in st.session_state.messages[-5:]:
-                with st.chat_message(msg["role"]):
-                    st.markdown(msg["content"])
-        elif not st.session_state.rag_engine:
-            render_empty_state("upload_file", "ابدأ بمستند", "ارفع مستنداً أو اختر مستنداً جاهزاً للبدء.")
-        else:
-            render_empty_state("chat", "ابدأ المحادثة", "ابدأ بسؤال عن المستند المحدد، مثل فكرته الرئيسية أو نتائجه.")
+        # Keep the transcript ahead of the composer in the document flow. Writing
+        # new messages back into this container lets the answer appear above the
+        # input instead of pushing the conversation below it after a rerun.
+        chat_feed = st.container(key="chat_transcript")
+        with chat_feed:
+            if st.session_state.messages:
+                for msg in st.session_state.messages[-5:]:
+                    with st.chat_message(msg["role"]):
+                        st.markdown(msg["content"])
+                        if msg.get("role") == "assistant":
+                            render_chat_sources(msg.get("sources", []))
+            elif not st.session_state.rag_engine:
+                render_empty_state("upload_file", "ابدأ بمستند", "ارفع مستنداً أو اختر مستنداً جاهزاً للبدء.")
+            else:
+                render_empty_state("chat", "ابدأ المحادثة", "ابدأ بسؤال عن المستند المحدد، مثل فكرته الرئيسية أو نتائجه.")
     
     with st.expander("استخدام الإدخال الصوتي", icon=":material/mic:"):
         # استخدام st.audio_input المدمج في Streamlit بدلاً من المكون الخارجي
@@ -1420,34 +1490,24 @@ with tab1:
                             "تحميل الإجابة"
                         )
 
-                        # عرض مصادر المعلومات
-                        if sources:
-                            st.markdown("##### المصادر")
-                            st.caption("مراجع من المستندات المستخدمة في الإجابة")
-
-                            for src in sources[:5]:  # عرض أول 5 مصادر فقط
-                                link = get_scholar_link_cached(src)
-                                col_src, col_link = st.columns([4, 1])
-                                with col_src:
-                                    safe_src = html.escape(src)
-                                    st.markdown(
-                                        f'<div class="source-chip"><span class="material-symbols-rounded" aria-hidden="true">description</span><span>{safe_src}</span></div>',
-                                        unsafe_allow_html=True,
-                                    )
-                                with col_link:
-                                    st.link_button("Scholar", link, icon=":material/open_in_new:", use_container_width=True)
-
-                            if len(sources) > 5:
-                                st.caption(f"و {len(sources) - 5} مصادر أخرى...")
+                        render_chat_sources(
+                            sources,
+                            include_scholar_links=True,
+                            instance_key=f"live_{len(st.session_state.messages)}",
+                        )
 
                         # إضافة الإجابة إلى سجل المحادثة
-                        st.session_state.messages.append({"role": "assistant", "content": response})
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": response,
+                            "sources": sources,
+                        })
 
                 else:
                     st.error("مساحة العمل غير جاهزة. ارفع مستنداً للفهرسة أو افتح الإعدادات لتهيئتها.")
     
     # قسم التحليل المتقدم (مدمج في البحث الذكي)
-    st.divider()
+    st.markdown('<div class="advanced-analysis-divider" aria-hidden="true"></div>', unsafe_allow_html=True)
     advanced_panel = st.expander("تحليل متقدم", expanded=False, icon=":material/science:")
     advanced_panel.__enter__()
     st.caption("أداة ثانوية للتحليل المتخصص عند الحاجة.")
