@@ -1296,6 +1296,58 @@ input[type="email"],
     border-radius: 0;
 }
 
+.st-key-legacy_voice_input {
+    display: none;
+}
+
+/* The native audio recorder and send action live inside the same Streamlit
+   chat input. The advanced-analysis expander is its compact footer row. */
+.st-key-chat_composer_shell {
+    box-sizing: border-box;
+    width: 100%;
+    max-width: var(--chat-reading-width);
+    margin: .35rem auto 0;
+    overflow: hidden;
+    background: rgba(17, 24, 33, .88);
+    border: 1px solid #40536a;
+    border-radius: 16px;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, .18);
+}
+
+.st-key-chat_composer_shell .st-key-tour_target_chat {
+    width: 100%;
+    max-width: none;
+    margin: 0;
+    padding: .5rem;
+}
+
+.st-key-chat_composer_shell [data-testid="stChatInput"] > div {
+    border: 0;
+    border-radius: 12px;
+    box-shadow: none;
+}
+
+.st-key-chat_composer_shell .advanced-analysis-divider {
+    margin: 0;
+    background: rgba(64, 83, 106, .72);
+}
+
+.st-key-chat_composer_shell [data-testid="stExpander"] {
+    margin: 0;
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+}
+
+.st-key-chat_composer_shell [data-testid="stExpander"] summary {
+    min-height: 46px;
+    padding: .65rem .9rem;
+}
+
+.st-key-chat_composer_shell [data-testid="stExpander"] details {
+    border: 0;
+}
+
 .advanced-analysis-divider {
     height: 1px;
     margin: 2rem 0 1rem;

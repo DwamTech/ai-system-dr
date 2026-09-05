@@ -524,6 +524,64 @@ def initialize_workspace():
         return False
 
 
+def transcribe_audio_submission(audio):
+    """Transcribe the native chat-composer recording without altering its flow."""
+    import speech_recognition as sr
+    import subprocess
+    import tempfile
+    import os
+
+    recognizer = sr.Recognizer()
+    recognizer.energy_threshold = 200
+    recognizer.dynamic_energy_threshold = True
+    recognizer.pause_threshold = 0.8
+
+    audio.seek(0)
+    audio_bytes = audio.read()
+    wav_buffer = io.BytesIO(audio_bytes)
+    audio_data = None
+
+    try:
+        with sr.AudioFile(wav_buffer) as source:
+            audio_data = recognizer.record(source)
+    except Exception:
+        tmp_in_path = ""
+        tmp_out_path = ""
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as tmp_in:
+                tmp_in.write(audio_bytes)
+                tmp_in_path = tmp_in.name
+            tmp_out_path = tmp_in_path.replace(".webm", ".wav")
+            result = subprocess.run(
+                ["ffmpeg", "-y", "-i", tmp_in_path, "-ar", "16000", "-ac", "1", tmp_out_path],
+                capture_output=True,
+                timeout=15,
+            )
+            if result.returncode == 0 and os.path.exists(tmp_out_path):
+                with sr.AudioFile(tmp_out_path) as source:
+                    audio_data = recognizer.record(source)
+        finally:
+            for path in (tmp_in_path, tmp_out_path):
+                if path:
+                    try:
+                        os.unlink(path)
+                    except OSError:
+                        pass
+
+    if audio_data is None:
+        raise RuntimeError("تعذّر قراءة ملف الصوت. حاول مرة أخرى.")
+
+    try:
+        return recognizer.recognize_google(audio_data, language="ar-EG")
+    except sr.UnknownValueError:
+        try:
+            return recognizer.recognize_google(audio_data, language="en-US")
+        except sr.UnknownValueError as exc:
+            raise RuntimeError("لم أتمكن من فهم الصوت. تأكد من وضوح التسجيل.") from exc
+    except sr.RequestError as exc:
+        raise RuntimeError("تعذّر الوصول إلى خدمة التعرف على الصوت الآن.") from exc
+
+
 def _format_duration(seconds):
     if seconds is None:
         return "يُحسب بعد بدء مرحلة المعالجة"
@@ -1378,9 +1436,12 @@ with tab1:
             else:
                 render_empty_state("chat", "ابدأ المحادثة", "ابدأ بسؤال عن المستند المحدد، مثل فكرته الرئيسية أو نتائجه.")
     
-    with st.expander("استخدام الإدخال الصوتي", icon=":material/mic:"):
+    # Replaced by the native recorder embedded in the composer below. Keeping
+    # this branch inert avoids a second recording widget during a safe UI-only
+    # migration of the existing transcription implementation.
+    with st.container(key="legacy_voice_input"):
         # استخدام st.audio_input المدمج في Streamlit بدلاً من المكون الخارجي
-        audio = st.audio_input("اضغط للتسجيل")
+        audio = None
         
         # معالجة الصوت إذا تم التسجيل
         if audio is not None:
@@ -1460,13 +1521,31 @@ with tab1:
                 except Exception:
                     st.error("تعذر تحويل الصوت إلى نص. جرّب تسجيل الصوت مرة أخرى أو اكتب السؤال.")
     
-    voice_prompt = None
-    if st.session_state.voice_text:
-        st.caption(f"النص الصوتي: {st.session_state.voice_text}")
-        if st.button("إرسال النص الصوتي", icon=":material/arrow_upward:"):
-            voice_prompt = st.session_state.voice_text
+    composer_shell = st.container(key="chat_composer_shell")
+    with composer_shell:
+        chat_submission = st.chat_input(
+            "اسأل أي سؤال عن المستند المحدد...",
+            key="tour_target_chat",
+            accept_audio=True,
+            audio_sample_rate=16000,
+        )
 
-    typed_prompt = st.chat_input("اسأل أي سؤال عن المستند المحدد...", key="tour_target_chat")
+    typed_prompt = getattr(chat_submission, "text", "") if chat_submission else ""
+    voice_prompt = None
+    submitted_audio = getattr(chat_submission, "audio", None) if chat_submission else None
+    if submitted_audio is not None:
+        with composer_shell:
+            with st.spinner("جاري تحويل الصوت إلى نص..."):
+                try:
+                    voice_prompt = transcribe_audio_submission(submitted_audio)
+                    st.success(f"تم التعرف: {voice_prompt}")
+                except ImportError:
+                    st.error("الإدخال الصوتي غير متاح الآن.")
+                except RuntimeError as exc:
+                    st.error(str(exc))
+                except Exception:
+                    st.error("تعذر تحويل الصوت إلى نص. جرّب تسجيل الصوت مرة أخرى أو اكتب السؤال.")
+
     new_prompt = typed_prompt or voice_prompt
     pending_prompt = st.session_state.tour_pending_prompt
 
@@ -1534,9 +1613,11 @@ with tab1:
                 else:
                     st.error("مساحة العمل غير جاهزة. ارفع مستنداً للفهرسة أو افتح الإعدادات لتهيئتها.")
     
-    # قسم التحليل المتقدم (مدمج في البحث الذكي)
-    st.markdown('<div class="advanced-analysis-divider" aria-hidden="true"></div>', unsafe_allow_html=True)
-    advanced_panel = st.expander("تحليل متقدم", expanded=False, icon=":material/science:")
+    # A single composer surface: input and recorder first, advanced controls in
+    # its compact footer row.
+    with composer_shell:
+        st.markdown('<div class="advanced-analysis-divider" aria-hidden="true"></div>', unsafe_allow_html=True)
+        advanced_panel = st.expander("تحليل متقدم", expanded=False, icon=":material/science:")
     advanced_panel.__enter__()
     st.caption("أداة ثانوية للتحليل المتخصص عند الحاجة.")
     
