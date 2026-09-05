@@ -2,6 +2,7 @@
 import streamlit as st
 import time
 import os
+import secrets
 from datetime import datetime
 import uuid
 import struct
@@ -31,6 +32,7 @@ except ImportError:
 from processor_optimized import OptimizedDocumentProcessor
 from engine_optimized import OptimizedRAGEngine
 from indexing_jobs import indexing_jobs
+from platform_client import PlatformClient, PlatformUnavailable
 from utils import (
     get_scholar_link_cached,
     save_support_ticket_optimized,
@@ -155,6 +157,36 @@ if "voice_text" not in st.session_state:
     st.session_state.voice_text = ""
 if "active_document" not in st.session_state:
     st.session_state.active_document = None
+if "active_document_version_id" not in st.session_state:
+    st.session_state.active_document_version_id = None
+if "document_versions" not in st.session_state:
+    st.session_state.document_versions = {}
+if "workspace_token" not in st.session_state:
+    browser_cookies = getattr(getattr(st, "context", None), "cookies", {})
+    cookie_token = browser_cookies.get("ai_conference_workspace", "")
+    st.session_state.workspace_token = cookie_token if isinstance(cookie_token, str) and len(cookie_token) >= 32 else ""
+if "platform_client" not in st.session_state:
+    try:
+        client = PlatformClient(st.session_state.workspace_token)
+        workspace = client.ensure_workspace()
+        if client.token != st.session_state.workspace_token:
+            st.session_state.workspace_token = client.token
+            st.session_state.workspace_cookie_to_set = client.token
+        st.session_state.platform_client = client
+        st.session_state.platform_available = True
+    except PlatformUnavailable:
+        st.session_state.platform_client = None
+        st.session_state.platform_available = False
+if "platform_mode" not in st.session_state:
+    # If this deployment has the durable platform configured, failures must be
+    # visible and retryable; a browser must never fall back to local workers.
+    st.session_state.platform_mode = bool(os.getenv("PLATFORM_API_URL", "").strip())
+if "indexing_job_ids" not in st.session_state:
+    st.session_state.indexing_job_ids = []
+if "conversation_id" not in st.session_state:
+    st.session_state.conversation_id = ""
+if "chat_job_id" not in st.session_state:
+    st.session_state.chat_job_id = ""
 # القيم الافتراضية للإعدادات المتقدمة
 if "chunk_size" not in st.session_state:
     st.session_state.chunk_size = 2000
@@ -192,12 +224,51 @@ if "tour_hold_step_once" not in st.session_state:
     st.session_state.tour_hold_step_once = False
 if "tour_pending_prompt" not in st.session_state:
     st.session_state.tour_pending_prompt = ""
+# The product now starts from the upload action itself. Keep old tour state
+# inert for existing browser sessions so no coach card reappears after refresh.
+st.session_state.tour_active = False
+st.session_state.tour_completed = True
 if "indexing_job_id" not in st.session_state:
-    query_job_id = st.query_params.get("index_job", "")
-    st.session_state.indexing_job_id = query_job_id if isinstance(query_job_id, str) else ""
+    st.session_state.indexing_job_id = ""
+if "auto_index_batch_signature" not in st.session_state:
+    st.session_state.auto_index_batch_signature = ""
+if "focus_composer_after_index" not in st.session_state:
+    st.session_state.focus_composer_after_index = ""
+if "platform_state_restored" not in st.session_state:
+    st.session_state.platform_state_restored = False
+
+if st.session_state.get("platform_available") and not st.session_state.platform_state_restored:
+    try:
+        restored_jobs = st.session_state.platform_client.jobs()
+        st.session_state.indexing_job_ids = [job["id"] for job in restored_jobs if job.get("queue") == "indexing"]
+        active_indexes = [job["id"] for job in restored_jobs if job.get("queue") == "indexing" and job.get("status") in {"queued", "preparing", "extracting", "indexing", "cancel_requested"}]
+        st.session_state.indexing_job_id = active_indexes[0] if active_indexes else (st.session_state.indexing_job_ids[0] if st.session_state.indexing_job_ids else "")
+        conversations = st.session_state.platform_client.conversations()
+        if conversations:
+            st.session_state.conversation_id = conversations[0]["id"]
+        active_answers = [job["id"] for job in restored_jobs if job.get("queue") == "generation" and job.get("status") in {"queued", "running"}]
+        st.session_state.chat_job_id = active_answers[0] if active_answers else ""
+        st.session_state.platform_state_restored = True
+    except PlatformUnavailable:
+        st.session_state.platform_available = False
 
 def load_indexed_files_from_db():
     """تحميل قائمة الملفات المفهرسة من قاعدة البيانات"""
+    if st.session_state.get("platform_available") and not st.session_state.db_files_loaded:
+        try:
+            documents = st.session_state.platform_client.documents().get("documents", [])
+            st.session_state.indexed_files = [document["name"] for document in documents]
+            st.session_state.document_versions = {
+                document["name"]: document["version_id"] for document in documents
+            }
+            for document in documents:
+                st.session_state.last_full_text.setdefault(
+                    document["name"], "[مستند مفهرس سابقاً - اختره للمحادثة]"
+                )
+            st.session_state.db_files_loaded = True
+            return bool(documents)
+        except PlatformUnavailable:
+            st.session_state.platform_available = False
     if st.session_state.rag_engine and not st.session_state.db_files_loaded:
         try:
             indexed_files = st.session_state.rag_engine.get_indexed_files()
@@ -524,6 +595,29 @@ def initialize_workspace():
         return False
 
 
+def ensure_platform_conversation():
+    """Return this browser's private conversation, creating it once."""
+    if not st.session_state.get("platform_available"):
+        return ""
+    try:
+        if not st.session_state.conversation_id:
+            st.session_state.conversation_id = st.session_state.platform_client.create_conversation()["id"]
+        return st.session_state.conversation_id
+    except PlatformUnavailable:
+        st.session_state.platform_available = False
+        return ""
+
+
+def sync_platform_messages():
+    conversation_id = ensure_platform_conversation()
+    if not conversation_id:
+        return
+    try:
+        st.session_state.messages = st.session_state.platform_client.messages(conversation_id)
+    except PlatformUnavailable:
+        st.session_state.platform_available = False
+
+
 def transcribe_audio_submission(audio):
     """Transcribe the native chat-composer recording without altering its flow."""
     import speech_recognition as sr
@@ -597,7 +691,26 @@ def _format_duration(seconds):
 
 def _attach_completed_indexing_job(status):
     """Reconnect a refreshed browser session to its completed background job."""
-    if status.get("state") != "completed":
+    if status.get("status", status.get("state")) != "completed":
+        return
+    if st.session_state.get("platform_available"):
+        result = status.get("result", {})
+        name = result.get("display_name")
+        version_id = result.get("version_id")
+        if name:
+            st.session_state.indexed_files = list(dict.fromkeys(st.session_state.indexed_files + [name]))
+            st.session_state.document_versions[name] = version_id
+            st.session_state.last_full_text.setdefault(name, "[مستند مفهرس سابقاً - اختره للمحادثة]")
+            # The file that just completed is the useful scope for the next
+            # action. Do not make the user choose it again before chatting.
+            st.session_state.active_document = name
+            st.session_state.active_document_version_id = version_id
+            st.session_state.active_document_selector = name
+            st.session_state.chat_document_selector = name
+            st.session_state.focus_composer_after_index = status.get("id", version_id or name)
+        st.session_state.db_files_loaded = False
+        st.session_state.tour_index_completed = True
+        st.session_state.tour_index_error = False
         return
     engine = indexing_jobs.get_engine(status.get("id"))
     if engine is not None:
@@ -619,6 +732,45 @@ def render_indexing_job_status():
     """Show durable job state and poll it without rerunning the whole app."""
     job_id = st.session_state.get("indexing_job_id", "")
     if not job_id:
+        return
+
+    # The platform API owns multi-user jobs.  Its status is intentionally
+    # polled inside a fragment so Streamlit page reruns never create workers or
+    # reset another browser's progress.
+    if st.session_state.get("platform_available"):
+        def draw_platform_status():
+            try:
+                status = st.session_state.platform_client.job(job_id)
+            except PlatformUnavailable:
+                st.warning("خدمة المهام غير متاحة مؤقتاً. ستستأنف المهمة من آخر حالة محفوظة.")
+                return
+            state = status.get("status", "queued")
+            progress = int(status.get("progress", 0))
+            if state in {"queued", "preparing", "extracting", "indexing", "cancel_requested"}:
+                st.progress(progress, text=f"{progress}% — {status.get('phase', 'جارٍ التحضير')}")
+                st.caption(status.get("message", "تعمل المهمة في الخلفية ويمكنك متابعة استخدام التطبيق."))
+                if state != "cancel_requested" and st.button("إلغاء الفهرسة", key=f"cancel_{job_id}"):
+                    st.session_state.platform_client.cancel_job(job_id)
+                    st.rerun()
+            elif state == "completed":
+                _attach_completed_indexing_job(status)
+                st.success(status.get("message", "اكتملت الفهرسة بنجاح."))
+            elif state == "cancelled":
+                st.warning(status.get("message", "أُلغيت مهمة الفهرسة."))
+            else:
+                st.error(status.get("message", "تعذر إكمال الفهرسة."))
+                st.session_state.tour_index_error = True
+            if state in {"completed", "failed", "cancelled"} and st.session_state.get("indexing_terminal_sync") != job_id:
+                st.session_state.indexing_terminal_sync = job_id
+                st.rerun(scope="app")
+
+        if hasattr(st, "fragment"):
+            @st.fragment(run_every="2s")
+            def platform_status_fragment():
+                draw_platform_status()
+            platform_status_fragment()
+        else:
+            draw_platform_status()
         return
 
     def draw_status():
@@ -685,6 +837,44 @@ def start_background_indexing(uploaded_files):
         return
     if rejected_files:
         st.warning("لم تُقبل بعض الملفات: " + "، ".join(rejected_files))
+    if st.session_state.get("platform_mode"):
+        if not st.session_state.get("platform_available"):
+            st.session_state.tour_index_error = True
+            st.error("منصة الفهرسة غير متاحة مؤقتاً. لم يبدأ تنفيذ محلي بديل؛ أعد المحاولة عند عودة الخدمة.")
+            return
+        try:
+            accepted_jobs = []
+            for uploaded_file in uploaded_files:
+                is_valid, _ = validate_pdf_file(uploaded_file, max_size_mb=25)
+                if not is_valid:
+                    continue
+                upload = st.session_state.platform_client.upload(uploaded_file)
+                created = st.session_state.platform_client.create_index_job(
+                    upload["id"], force_ocr=st.session_state.force_ocr
+                )
+                job = created.get("job")
+                if job:
+                    accepted_jobs.append(job["id"])
+                elif created.get("document"):
+                    document = created["document"]
+                    st.session_state.indexed_files = list(dict.fromkeys(
+                        st.session_state.indexed_files + [document["name"]]
+                    ))
+                    st.session_state.document_versions[document["name"]] = document["version_id"]
+            if not accepted_jobs:
+                st.session_state.tour_index_completed = True
+                st.info("هذه الملفات موجودة بالفعل في الأرشيف ومهيأة للمحادثة.")
+                return
+            st.session_state.indexing_job_ids = accepted_jobs
+            st.session_state.indexing_job_id = accepted_jobs[-1]
+            st.session_state.indexing_terminal_sync = ""
+            st.session_state.tour_index_error = False
+            st.session_state.tour_index_completed = False
+            st.rerun()
+        except PlatformUnavailable as exc:
+            st.session_state.tour_index_error = True
+            st.error(f"تعذر إرسال الفهرسة الآن: {exc}")
+        return
     configured_mode = st.session_state.processing_mode
     parallel = configured_mode == "متوازي" or (
         configured_mode == "تلقائي" and len(valid_files) > 1
@@ -706,7 +896,6 @@ def start_background_indexing(uploaded_files):
     st.session_state.indexing_terminal_sync = ""
     st.session_state.tour_index_error = False
     st.session_state.tour_index_completed = False
-    st.query_params["index_job"] = job_id
     st.rerun()
 
 
@@ -716,20 +905,72 @@ def _available_documents():
     ))
 
 
+def on_document_upload():
+    # A new batch must expose indexing even after an earlier batch completed.
+    st.session_state.tour_index_completed = False
+    st.session_state.tour_index_error = False
+    st.session_state.auto_index_batch_signature = ""
+    if st.session_state.get("platform_available") or not indexing_jobs.has_running_job():
+        # A completed job's status fragment otherwise marks the new batch done.
+        st.session_state.indexing_job_id = ""
+        st.session_state.indexing_terminal_sync = ""
+
+
+def on_document_selection():
+    selected = st.session_state.active_document_selector
+    st.session_state.active_document = None if selected == "كل المستندات" else selected
+    st.session_state.active_document_version_id = st.session_state.document_versions.get(
+        st.session_state.active_document
+    )
+    st.session_state.chat_document_selector = selected
+
+
+def on_chat_document_selection():
+    """Keep the composer scope and document rail on the same selected version."""
+    selected = st.session_state.chat_document_selector
+    st.session_state.active_document = None if selected == "كل المستندات" else selected
+    st.session_state.active_document_version_id = st.session_state.document_versions.get(
+        st.session_state.active_document
+    )
+    st.session_state.active_document_selector = selected
+
+
 def render_primary_workflow():
-    """Render the single real upload → index → select workflow in main content."""
+    """One file-management surface shared by the desktop rail and mobile flow."""
     with st.container(key="primary_workflow"):
+        if st.session_state.get("platform_available") and not st.session_state.db_files_loaded:
+            load_indexed_files_from_db()
         if st.session_state.get("indexing_job_id"):
             render_indexing_job_status()
+        if st.session_state.get("platform_available") and len(st.session_state.get("indexing_job_ids", [])) > 1:
+            with st.expander("حالة كل ملفات الدفعة", expanded=True):
+                for queued_job_id in st.session_state.indexing_job_ids:
+                    if queued_job_id == st.session_state.indexing_job_id:
+                        continue
+                    try:
+                        queued_status = st.session_state.platform_client.job(queued_job_id)
+                        queued_progress = int(queued_status.get("progress", 0))
+                        st.progress(queued_progress, text=f"{queued_progress}% — {queued_status.get('phase', 'في الانتظار')}")
+                        st.caption(queued_status.get("message", "تُحفظ حالة الملف في الخلفية."))
+                    except PlatformUnavailable:
+                        st.caption("تعذر تحديث حالة ملف آخر مؤقتاً؛ ستستعاد من المنصة عند عودة الاتصال.")
+                        break
 
         uploaded_files = st.session_state.get("tour_target_upload", []) or []
         available_documents = _available_documents()
         indexing_is_running = indexing_jobs.has_running_job()
-        has_active_document = bool(st.session_state.active_document)
-
-        if not available_documents:
+        if st.session_state.get("platform_available") and st.session_state.get("indexing_job_id"):
+            try:
+                indexing_is_running = st.session_state.platform_client.job(
+                    st.session_state.indexing_job_id
+                ).get("status") in {"queued", "preparing", "extracting", "indexing", "cancel_requested"}
+            except PlatformUnavailable:
+                # Do not accept a duplicate browser submission while durable
+                # status cannot be read.
+                indexing_is_running = True
+        with st.expander("إدارة الملفات", expanded=True, icon=":material/folder_open:"):
             st.markdown(
-                '<section class="workflow-panel__intro" dir="rtl"><span class="material-symbols-rounded">upload_file</span><div><h2>ابدأ برفع مستند</h2><p>ارفع ملف PDF أو أكثر لبدء البحث والتحليل.</p></div></section>',
+                '<section class="workflow-panel__intro" dir="rtl"><span class="material-symbols-rounded">upload_file</span><div><h2>قم برفع الملف</h2><p>سيحدث كل شيء تلقائيًا: الرفع والتجهيز والفهرسة، ثم يصبح الملف جاهزًا للمحادثة.</p></div></section>',
                 unsafe_allow_html=True,
             )
             uploaded_files = st.file_uploader(
@@ -738,24 +979,30 @@ def render_primary_workflow():
                 accept_multiple_files=True,
                 help="يمكنك رفع عدة ملفات PDF مرة واحدة.",
                 key="tour_target_upload",
+                on_change=on_document_upload,
+                disabled=indexing_is_running or bool(st.session_state.tour_pending_prompt),
             ) or []
-
         if uploaded_files and not st.session_state.tour_index_completed:
             total_size = sum(file.size for file in uploaded_files)
             st.markdown(
-                f'<div class="workflow-panel__selected" dir="rtl"><span class="material-symbols-rounded">description</span><div><strong>المستندات جاهزة للمعالجة</strong><small>{len(uploaded_files)} ملف · {format_file_size(total_size)}</small></div></div>',
+                f'<div class="workflow-panel__selected" dir="rtl"><span class="material-symbols-rounded">cloud_upload</span><div><strong>سيبدأ تجهيز المستندات تلقائياً</strong><small>{len(uploaded_files)} ملف · {format_file_size(total_size)}</small></div></div>',
                 unsafe_allow_html=True,
             )
-            if st.button(
-                "الفهرسة جارية في الخلفية" if indexing_is_running else "ابدأ الفهرسة",
-                type="primary",
-                icon=":material/hourglass_top:" if indexing_is_running else ":material/auto_awesome_motion:",
-                use_container_width=True,
-                key="tour_target_index_background",
-                disabled=indexing_is_running,
-            ):
-                start_background_indexing(uploaded_files)
-        elif available_documents and not has_active_document:
+            batch_signature = "|".join(
+                f"{getattr(file, 'file_id', '')}:{file.name}:{file.size}" for file in uploaded_files
+            )
+            with st.container(key="tour_target_index_background"):
+                if indexing_is_running:
+                    st.info("جارٍ رفع الملفات وفهرستها في الخلفية. يمكنك متابعة الحالة أدناه.")
+                elif batch_signature != st.session_state.auto_index_batch_signature:
+                    st.session_state.auto_index_batch_signature = batch_signature
+                    st.status("جارٍ إرسال الملفات للتجهيز والفهرسة…", state="running", expanded=False)
+                    # Uploading is the only user action. The durable queue owns
+                    # validation, OCR, embeddings and publication from here.
+                    start_background_indexing(uploaded_files)
+                else:
+                    st.warning("تعذر بدء الفهرسة لهذه الدفعة. غيّر الملفات أو أعد رفعها للمحاولة مرة أخرى.")
+        if available_documents:
             st.markdown(
                 '<section class="workflow-panel__intro workflow-panel__intro--compact" dir="rtl"><span class="material-symbols-rounded">touch_app</span><div><h2>اختر المستند</h2><p>حدد الملف الذي تريد السؤال عنه قبل بدء المحادثة.</p></div></section>',
                 unsafe_allow_html=True,
@@ -770,11 +1017,16 @@ def render_primary_workflow():
                 index=document_options.index(current_option),
                 help="اختر ملفاً لعزل إجابات البحث عليه، أو اختر كل المستندات للبحث العام.",
                 key="active_document_selector",
+                on_change=on_document_selection,
+                disabled=bool(st.session_state.tour_pending_prompt),
             )
             st.session_state.active_document = (
                 None if selected_document == "كل المستندات" else selected_document
             )
-        elif has_active_document:
+        st.session_state.active_document_version_id = st.session_state.document_versions.get(
+            st.session_state.active_document
+        )
+        if st.session_state.active_document:
             active_label = html.escape(st.session_state.active_document)
             st.markdown(
                 f'<div class="workflow-panel__active" dir="rtl"><span class="material-symbols-rounded">task</span><div><small>المستند النشط</small><strong dir="auto">{active_label}</strong></div><b>جاهز للتحليل</b></div>',
@@ -788,9 +1040,26 @@ def render_product_header():
     st.markdown(
         """
         <section class="product-header" dir="rtl">
-            <div class="product-kicker">مساحة بحث مدعومة بالذكاء الاصطناعي</div>
-            <h1>محرك البحث الأكاديمي الذكي</h1>
-            <p>ابحث، حلّل، ولخّص مستنداتك بوضوح وفي مكان واحد.</p>
+            <div class="product-header__content">
+                <div class="product-kicker"><span class="status-dot"></span> مساحة بحث مدعومة بالذكاء الاصطناعي</div>
+                <h1>محرك البحث الأكاديمي <span>الذكي</span></h1>
+                <p>ابحث، حلّل، ولخّص مستنداتك بوضوح وفي مكان واحد.</p>
+                <div class="product-features" aria-label="مزايا مساحة البحث">
+                    <span><i class="material-symbols-rounded" aria-hidden="true">bolt</i> تجهيز تلقائي</span>
+                    <span><i class="material-symbols-rounded" aria-hidden="true">verified</i> إجابات موثقة</span>
+                    <span><i class="material-symbols-rounded" aria-hidden="true">search</i> بحث ذكي</span>
+                </div>
+            </div>
+            <div class="product-header__visual" aria-hidden="true">
+                <span class="ai-orbit ai-orbit--outer"></span>
+                <span class="ai-orbit ai-orbit--inner"></span>
+                <span class="ai-node ai-node--one"></span>
+                <span class="ai-node ai-node--two"></span>
+                <span class="ai-node ai-node--three"></span>
+                <div class="ai-core"><i class="material-symbols-rounded">neurology</i></div>
+                <i class="material-symbols-rounded ai-spark ai-spark--one">auto_awesome</i>
+                <i class="material-symbols-rounded ai-spark ai-spark--two">flare</i>
+            </div>
         </section>
         """,
         unsafe_allow_html=True,
@@ -802,7 +1071,7 @@ def derive_workflow_step(uploaded_files):
     if st.session_state.tour_active:
         return max(1, min(5, st.session_state.tour_step))
     if st.session_state.messages:
-        return 5
+        return 6 if st.session_state.tour_completed else 5
     if st.session_state.active_document:
         return 4
     if st.session_state.tour_index_completed or st.session_state.indexed_files:
@@ -814,14 +1083,15 @@ def derive_workflow_step(uploaded_files):
 
 def render_workflow_steps(uploaded_files):
     current_step = derive_workflow_step(uploaded_files)
-    labels = ["رفع المستند", "الفهرسة", "اختيار النطاق", "استخدام الأدوات"]
+    labels = ["رفع المستند", "الفهرسة", "اختيار النطاق", "المحادثة", "أدوات المستند"]
     steps = []
     for number, label in enumerate(labels, 1):
         is_complete = number < current_step
         state = "is-complete" if is_complete else "is-active" if number == current_step else ""
         marker = '<i class="material-symbols-rounded">check</i>' if is_complete else str(number)
+        current_attr = 'aria-current="step"' if number == current_step else ""
         steps.append(
-            f'<div class="workflow-step {state}"><span>{marker}</span><small>{label}</small></div>'
+            f'<div class="workflow-step {state}" {current_attr}><span>{marker}</span><small>{label}</small></div>'
         )
     mobile_step = min(max(current_step, 1), len(labels))
     mobile_progress = int(mobile_step * 100 / len(labels))
@@ -859,7 +1129,7 @@ def render_document_context():
 def render_empty_state(icon_name, title, body):
     st.markdown(
         f"""
-        <div class="empty-state" dir="rtl">
+        <div class="empty-state empty-state--{icon_name}" dir="rtl">
             <span class="material-symbols-rounded" aria-hidden="true">{icon_name}</span>
             <div><strong>{title}</strong><p>{body}</p></div>
         </div>
@@ -873,6 +1143,7 @@ def render_chat_header():
     active_document = st.session_state.active_document
     scope = html.escape(active_document or "كل المستندات")
     scope_icon = "description" if active_document else "library_books"
+    ready_token = html.escape(str(st.session_state.get("focus_composer_after_index", "")))
     st.markdown(
         f"""
         <section class="chat-workspace__header" dir="rtl">
@@ -881,10 +1152,12 @@ def render_chat_header():
                 <p>اسأل عن المحتوى، وستظهر الإجابة ومصادرها هنا.</p>
             </div>
             <div class="chat-workspace__scope">
-                <span class="material-symbols-rounded" aria-hidden="true">{scope_icon}</span>
-                <span><small>أنت تسأل عن</small><b dir="auto">{scope}</b></span>
+                <span class="chat-workspace__scope-icon material-symbols-rounded" aria-hidden="true">{scope_icon}</span>
+                <span class="chat-workspace__scope-copy"><small>أنت تسأل عن</small><b><bdi>{scope}</bdi></b></span>
+                <span class="chat-workspace__scope-status" role="status" title="نطاق المحادثة نشط" aria-label="نطاق المحادثة نشط"></span>
             </div>
         </section>
+        <span class="auto-focus-composer" data-ready-token="{ready_token}" aria-hidden="true"></span>
         """,
         unsafe_allow_html=True,
     )
@@ -906,7 +1179,11 @@ def render_chat_sources(sources, include_scholar_links=False, instance_key=""):
     st.markdown(
         f"""
         <footer class="chat-sources" dir="rtl">
-            <span class="chat-sources__label">المصادر</span>
+            <div class="chat-sources__head">
+                <span class="chat-sources__icon material-symbols-rounded" aria-hidden="true">library_books</span>
+                <span class="chat-sources__label"><strong>مصادر الإجابة</strong><small>المراجع المستخدمة في إنشاء الرد</small></span>
+                <span class="chat-sources__count">{len(sources)} مصدر</span>
+            </div>
             <div class="chat-sources__list">{chips}</div>
         </footer>
         """,
@@ -1005,7 +1282,8 @@ def sync_tour_with_actions(uploaded_files):
 
 
 def render_guided_tour():
-    """Render a non-modal floating coach card; the real highlighted control stays primary."""
+    """Render the coach beside the real workflow, without covering its controls."""
+    return
     if not st.session_state.tour_active:
         with st.container(key="tour_coach"):
             st.markdown('<span class="tour-inactive"></span>', unsafe_allow_html=True)
@@ -1022,7 +1300,7 @@ def render_guided_tour():
             f"""
             <div class="tour-card" dir="rtl">
                 <div class="tour-card__eyebrow"><span>جولة تعريفية</span><b>الخطوة {step} من 5</b></div>
-                <div class="tour-progress"><b style="width:{step * 20}%"></b></div>
+                <div class="tour-progress" role="progressbar" aria-label="تقدم الجولة" aria-valuenow="{step}" aria-valuemin="0" aria-valuemax="5"><b style="width:{step * 20}%"></b></div>
                 <h3>{title}</h3><p><span class="tour-card__desktop-copy">{description}</span><span class="tour-card__mobile-copy">{TOUR_MOBILE_STEPS[step]}</span></p>
             </div>
             """,
@@ -1034,7 +1312,7 @@ def render_guided_tour():
         if step == 2 and st.session_state.tour_index_error:
             st.caption("لم تكتمل الفهرسة. راجع رسالة الحالة ثم حاول مرة أخرى.")
         if step < 5:
-            st.caption("نفّذ الخطوة المضاءة للمتابعة تلقائيًا.")
+            st.markdown('<small class="tour-hint">نفّذ الخطوة المضاءة للمتابعة تلقائيًا.</small>', unsafe_allow_html=True)
         previous_col, skip_col, next_col = st.columns([1, 1.3, 1])
         with previous_col:
             if st.button("السابق", disabled=step == 1, use_container_width=True, key=f"tour_previous_{control_key}"):
@@ -1056,7 +1334,7 @@ def render_guided_tour():
                 (step == 1 and bool(st.session_state.get("tour_target_upload")))
                 or (step == 2 and st.session_state.tour_index_completed)
             )
-            manual_next_allowed = step >= 3 or completed_real_action
+            manual_next_allowed = step in (3, 5) or completed_real_action
             if st.button(label, type="primary" if step == 5 else "secondary", disabled=not manual_next_allowed, use_container_width=True, key=f"tour_next_{control_key}"):
                 if step == 5:
                     end_tour(True)
@@ -1136,12 +1414,13 @@ def show_settings_dialog():
                 st.session_state.rag_engine._query_cache.clear()
                 st.session_state.rag_engine._metadata_cache.clear()
                 st.success("تم مسح الذاكرة المؤقتة.")
-        confirm_clear = st.checkbox("أفهم أن مسح الفهرس لا يمكن التراجع عنه")
-        if st.button("مسح فهرس المستندات", type="primary", icon=":material/delete_forever:", disabled=not confirm_clear, use_container_width=True, key="clear_index_danger"):
-            if st.session_state.rag_engine and st.session_state.rag_engine.clear_database():
-                st.session_state.indexed_files = []
-                st.session_state.active_document = None
-                st.success("تم مسح الفهرس.")
+        if not st.session_state.get("platform_available") and os.getenv("ALLOW_LEGACY_DESTRUCTIVE_ACTIONS") == "1":
+            confirm_clear = st.checkbox("أفهم أن مسح الفهرس لا يمكن التراجع عنه")
+            if st.button("مسح فهرس المستندات", type="primary", icon=":material/delete_forever:", disabled=not confirm_clear, use_container_width=True, key="clear_index_danger"):
+                if st.session_state.rag_engine and st.session_state.rag_engine.clear_database():
+                    st.session_state.indexed_files = []
+                    st.session_state.active_document = None
+                    st.success("تم مسح الفهرس.")
         if st.button("عرض تقرير الأداء", icon=":material/monitoring:", use_container_width=True):
             if st.session_state.rag_engine and hasattr(st.session_state.rag_engine, "monitor"):
                 st.markdown(st.session_state.rag_engine.monitor.get_performance_report())
@@ -1174,10 +1453,7 @@ def show_archive_dialog():
 
 @st.dialog("المساعدة والدعم", icon=":material/help:")
 def show_support_dialog():
-    st.markdown("ارفع ملفات PDF، ابدأ الفهرسة، اختر نطاق العمل، ثم استخدم المحادثة أو إحدى الأدوات.")
-    if st.button("إعادة الجولة التعريفية", icon=":material/replay:", use_container_width=True):
-        restart_tour()
-        st.rerun()
+    st.markdown("قم برفع ملف PDF وسيُجهَّز ويُفهرس تلقائيًا، ثم ابدأ المحادثة عند ظهور حالة الجاهزية.")
     with st.form("support_form_optimized"):
         rating = st.select_slider("تقييم التجربة", options=[1, 2, 3, 4, 5], value=5)
         name = st.text_input("الاسم (اختياري)")
@@ -1189,23 +1465,41 @@ def show_support_dialog():
             st.success("شكراً لك. تم حفظ رسالتك.")
 
 
-# --- Sidebar ---
-with st.sidebar:
+# --- Product introduction leads the reading order on every viewport. ---
+render_product_header()
+
+# --- Document rail: fixed on the right on desktop, inline below the hero on mobile. ---
+uploaded_files = st.session_state.get("tour_target_upload", []) or []
+with st.container(key="document_rail"):
     st.markdown(
         """
         <div class="sidebar-brand" dir="rtl">
-            <span class="material-symbols-rounded" aria-hidden="true">school</span>
-            <div><strong>باحث</strong><small>مساحة أكاديمية ذكية</small></div>
+            <span class="sidebar-brand__mark" aria-hidden="true">
+                <i class="material-symbols-rounded">school</i>
+                <i class="material-symbols-rounded">auto_awesome</i>
+            </span>
+            <div class="sidebar-brand__copy"><strong>باحث</strong><small>مساحة أكاديمية ذكية</small></div>
+            <b class="sidebar-brand__status"><i></i> متصل</b>
         </div>
         """,
         unsafe_allow_html=True,
     )
-    st.caption("التنقل والمساعدة")
-    if st.session_state.active_document:
-        st.markdown(
-            f'<div class="sidebar-document-summary" dir="rtl"><small>المستند النشط</small><strong dir="auto">{html.escape(st.session_state.active_document)}</strong></div>',
-            unsafe_allow_html=True,
-        )
+    st.markdown(
+        '''<section class="rail-heading" dir="rtl">
+            <span class="rail-heading__eyebrow"><i class="material-symbols-rounded">folder_supervised</i> مكتبتك الذكية</span>
+            <h2>مساحة المستندات</h2>
+            <p>قم برفع الملف وسيحدث كل شيء تلقائيًا</p>
+            <div class="rail-auto-flow" aria-label="مسار تجهيز المستند تلقائيًا">
+                <span><i class="material-symbols-rounded">upload_file</i> ارفع</span>
+                <b class="material-symbols-rounded" aria-hidden="true">arrow_back</b>
+                <span><i class="material-symbols-rounded">data_object</i> نفهرس</span>
+                <b class="material-symbols-rounded" aria-hidden="true">arrow_back</b>
+                <span><i class="material-symbols-rounded">forum</i> اسأل</span>
+            </div>
+        </section>''',
+        unsafe_allow_html=True,
+    )
+    uploaded_files = render_primary_workflow()
 
     # The emergency legacy path remains available only when explicitly enabled.
     # Its normal controls live in the main workflow panel, not the sidebar.
@@ -1384,24 +1678,17 @@ with st.sidebar:
                 placeholder.empty()
     
     st.markdown('<div class="sidebar-spacer"></div>', unsafe_allow_html=True)
-    if st.button("الإعدادات", icon=":material/settings:", use_container_width=True):
-        show_settings_dialog()
-    if st.button("الأرشيف", icon=":material/archive:", use_container_width=True):
-        show_archive_dialog()
-    if st.button("المساعدة", icon=":material/help:", use_container_width=True):
-        show_support_dialog()
+    with st.expander("خيارات مساحة العمل", icon=":material/tune:"):
+        if st.button("الإعدادات", icon=":material/settings:", use_container_width=True):
+            show_settings_dialog()
+        if st.button("الأرشيف", icon=":material/archive:", use_container_width=True):
+            show_archive_dialog()
+        if st.button("المساعدة", icon=":material/help:", use_container_width=True):
+            show_support_dialog()
 
 # ==========================================
 # 4. المحتوى الرئيسي
 # ==========================================
-
-render_product_header()
-uploaded_files = st.session_state.get("tour_target_upload", []) or []
-sync_tour_with_actions(uploaded_files)
-render_workflow_steps(uploaded_files)
-uploaded_files = render_primary_workflow()
-render_document_context()
-render_guided_tour()
 
 # تبويبات الواجهة
 with st.container(key="tour_target_tools"):
@@ -1417,6 +1704,8 @@ with st.container(key="tour_target_tools"):
 
 # --- TAB 1: البحث الذكي ---
 with tab1:
+    if st.session_state.get("platform_available"):
+        sync_platform_messages()
     with st.container(key="chat_workspace"):
         render_chat_header()
 
@@ -1426,11 +1715,18 @@ with tab1:
         chat_feed = st.container(key="chat_transcript")
         with chat_feed:
             if st.session_state.messages:
-                for msg in st.session_state.messages[-5:]:
+                for message_index, msg in enumerate(st.session_state.messages):
                     with st.chat_message(msg["role"]):
                         st.markdown(msg["content"])
                         if msg.get("role") == "assistant":
-                            render_chat_sources(msg.get("sources", []))
+                            create_fancy_download_button_optimized(
+                                msg["content"], f"search_result_{message_index}", "تحميل الإجابة",
+                                icon=":material/download:"
+                            )
+                            render_chat_sources(
+                                msg.get("sources", []), include_scholar_links=True,
+                                instance_key=f"history_{message_index}",
+                            )
             elif not st.session_state.rag_engine:
                 render_empty_state("upload_file", "ابدأ بمستند", "ارفع مستنداً أو اختر مستنداً جاهزاً للبدء.")
             else:
@@ -1523,11 +1819,24 @@ with tab1:
     
     composer_shell = st.container(key="chat_composer_shell")
     with composer_shell:
+        chat_scope_options = ["كل المستندات"] + _available_documents()
+        chat_scope_current = st.session_state.active_document or "كل المستندات"
+        if chat_scope_current not in chat_scope_options:
+            chat_scope_current = "كل المستندات"
+        st.session_state.chat_document_selector = chat_scope_current
+        st.selectbox(
+            "اختر الملف للتحليل",
+            chat_scope_options,
+            key="chat_document_selector",
+            on_change=on_chat_document_selection,
+            disabled=bool(st.session_state.tour_pending_prompt) or bool(st.session_state.chat_job_id),
+        )
         chat_submission = st.chat_input(
-            "اسأل أي سؤال عن المستند المحدد...",
+            "اسأل عن المستند…",
             key="tour_target_chat",
             accept_audio=True,
             audio_sample_rate=16000,
+            disabled=bool(st.session_state.tour_pending_prompt) or bool(st.session_state.chat_job_id),
         )
 
     typed_prompt = getattr(chat_submission, "text", "") if chat_submission else ""
@@ -1549,9 +1858,32 @@ with tab1:
     new_prompt = typed_prompt or voice_prompt
     pending_prompt = st.session_state.tour_pending_prompt
 
+    if new_prompt and st.session_state.get("platform_mode"):
+        if not st.session_state.get("platform_available"):
+            st.error("منصة المحادثة غير متاحة مؤقتاً. لم يُرسل السؤال إلى تنفيذ محلي بديل.")
+            new_prompt = ""
+        else:
+            try:
+                conversation_id = ensure_platform_conversation()
+                submitted = st.session_state.platform_client.send_prompt(
+                    conversation_id, new_prompt, uuid.uuid4().hex,
+                    st.session_state.active_document_version_id,
+                )
+                st.session_state.chat_job_id = submitted["job"]["id"]
+                if st.session_state.voice_text:
+                    st.session_state.voice_text = ""
+                if st.session_state.tour_active and st.session_state.tour_step == 4:
+                    st.session_state.tour_last_completed_step = 4
+                    st.session_state.tour_step = 5
+                    st.session_state.tour_confirmation = "تم إرسال سؤالك."
+                st.rerun()
+            except PlatformUnavailable as exc:
+                st.error(f"تعذر إرسال السؤال الآن: {exc}")
+                new_prompt = ""
+
     # First persist the user's real message, then rerun. The next pass draws it
     # in the transcript above the sticky composer before the provider starts.
-    if new_prompt and not pending_prompt:
+    if new_prompt and not pending_prompt and not st.session_state.get("platform_mode"):
         st.session_state.messages.append({"role": "user", "content": new_prompt})
         st.session_state.tour_pending_prompt = new_prompt
         if st.session_state.voice_text:
@@ -1563,11 +1895,47 @@ with tab1:
         st.rerun()
 
     prompt = pending_prompt
-    if pending_prompt:
-        st.session_state.tour_pending_prompt = ""
     
+    # Render the composer's footer before the potentially slow provider call.
+    with composer_shell:
+        st.markdown('<div class="advanced-analysis-divider" aria-hidden="true"></div>', unsafe_allow_html=True)
+        advanced_panel = st.expander("تحليل متقدم", expanded=False, icon=":material/science:")
+        st.markdown(
+            '''<footer class="composer-ownership" dir="rtl" aria-label="حقوق الملكية">
+                    <span class="material-symbols-rounded" aria-hidden="true">copyright</span>
+                    <span><b>2026</b> دكتور هايدي بالتعاون مع شركة دوام للبرمجيات والأعمال التقنية</span>
+                </footer>''',
+            unsafe_allow_html=True,
+        )
+
     # معالجة الاستعلام
-    if prompt:
+    if st.session_state.get("platform_available") and st.session_state.get("chat_job_id"):
+        def draw_chat_job_status():
+            try:
+                status = st.session_state.platform_client.job(st.session_state.chat_job_id)
+            except PlatformUnavailable:
+                st.caption("تُحفظ المحادثة بأمان؛ يتعذر جلب حالتها مؤقتاً.")
+                return
+            if status.get("status") in {"queued", "running"}:
+                st.status(status.get("phase", "جارٍ إعداد الإجابة"), state="running", expanded=False)
+                return
+            if status.get("status") == "completed":
+                st.session_state.chat_job_id = ""
+                sync_platform_messages()
+                st.rerun(scope="app")
+            elif status.get("status") in {"failed", "cancelled"}:
+                st.session_state.chat_job_id = ""
+                st.error(status.get("message", "تعذر إنشاء الإجابة."))
+
+        if hasattr(st, "fragment"):
+            @st.fragment(run_every="2s")
+            def chat_job_fragment():
+                draw_chat_job_status()
+            chat_job_fragment()
+        else:
+            draw_chat_job_status()
+
+    if prompt and not st.session_state.get("platform_mode"):
         with chat_feed:
             with st.chat_message("assistant"):
                 if st.session_state.rag_engine:
@@ -1578,11 +1946,15 @@ with tab1:
 
                         # تنفيذ الاستعلام مع caching وتاريخ المحادثة
                         chat_history = st.session_state.messages[:-1] if len(st.session_state.messages) > 1 else []
-                        response, sources = st.session_state.rag_engine.query_with_cache(
-                            prompt,
-                            chat_history=chat_history,
-                            active_document=st.session_state.active_document,
-                        )
+                        try:
+                            response, sources = st.session_state.rag_engine.query_with_cache(
+                                prompt,
+                                chat_history=chat_history,
+                                active_document=st.session_state.active_document,
+                            )
+                        except Exception:
+                            response = "تعذر إكمال الإجابة الآن. حاول إرسال السؤال مرة أخرى."
+                            sources = []
 
                         # إخفاء مؤشر التحميل
                         thinking_ph.empty()
@@ -1594,7 +1966,8 @@ with tab1:
                         filename = create_fancy_download_button_optimized(
                             response,
                             "search_result",
-                            "تحميل الإجابة"
+                            "تحميل الإجابة",
+                            icon=":material/download:"
                         )
 
                         render_chat_sources(
@@ -1611,13 +1984,18 @@ with tab1:
                         })
 
                 else:
-                    st.error("مساحة العمل غير جاهزة. ارفع مستنداً للفهرسة أو افتح الإعدادات لتهيئتها.")
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": "مساحة العمل غير جاهزة. ارفع مستنداً للفهرسة أو افتح الإعدادات لتهيئتها.",
+                        "sources": [],
+                    })
     
     # A single composer surface: input and recorder first, advanced controls in
     # its compact footer row.
-    with composer_shell:
-        st.markdown('<div class="advanced-analysis-divider" aria-hidden="true"></div>', unsafe_allow_html=True)
-        advanced_panel = st.expander("تحليل متقدم", expanded=False, icon=":material/science:")
+    if prompt and not st.session_state.get("platform_mode"):
+        # Re-enable the native composer after the pending response is rendered.
+        st.session_state.tour_pending_prompt = ""
+        st.rerun()
     advanced_panel.__enter__()
     st.caption("أداة ثانوية للتحليل المتخصص عند الحاجة.")
     
@@ -2753,5 +3131,13 @@ with tab7:
         st.warning("⚠️ محرك البحث على الإنترنت غير متاح. تأكد من تشغيل حاوية SearXNG.")
         st.code("docker compose up searxng -d", language="bash")
 
-# تذييل هادئ بلا تفاصيل تشغيلية.
-st.caption("مساحة البحث الأكاديمي الذكية")
+# Presentation listeners are installed once and retained across native reruns.
+with open(os.path.join(os.path.dirname(__file__), "dashboard.js"), encoding="utf-8") as dashboard_script:
+    st.html(f"<script>{dashboard_script.read()}</script>", unsafe_allow_javascript=True)
+
+# Keep the server-issued workspace secret out of a shareable URL. The next
+# Streamlit handshake restores it from this same-site browser cookie.
+if st.session_state.get("workspace_cookie_to_set"):
+    safe_token = json.dumps(st.session_state.workspace_cookie_to_set)
+    st.html(f"<script>document.cookie='ai_conference_workspace='+encodeURIComponent({safe_token})+'; Path=/; Max-Age=2592000; SameSite=Strict';</script>", unsafe_allow_javascript=True)
+    del st.session_state.workspace_cookie_to_set

@@ -12,10 +12,14 @@ services:
       - ./data:/app/data
       - app_stats:/app/stats
     environment:
+      # Keep model downloads across image rebuilds and container recreation.
+      HF_HOME: /app/data/huggingface
       OPENSEARCH_URL: ${OPENSEARCH_URL:-http://opensearch:9200}
       OPENSEARCH_USER: ${OPENSEARCH_USER:-admin}
       OPENSEARCH_PASS: ${OPENSEARCH_PASS:-admin}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      PLATFORM_API_URL: http://api:8000
+      EMBEDDINGS_URL: http://embeddings:8001
       SEARXNG_URL: ${SEARXNG_URL:-http://searxng:8080}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?Set OPENROUTER_API_KEY in .env}
       OPENROUTER_MODEL: ${OPENROUTER_MODEL:-qwen/qwen3-30b-a3b-instruct-2507}
@@ -25,8 +29,10 @@ services:
       OPENROUTER_MAX_RETRIES: ${OPENROUTER_MAX_RETRIES:-1}
       OPENROUTER_HTTP_REFERER: ${OPENROUTER_HTTP_REFERER:-}
       OPENROUTER_APP_TITLE: ${OPENROUTER_APP_TITLE:-AI Conference Research Assistant}
+      LLM_GATE_REDIS_URL: redis://task-redis:6379/1
+      LLM_MAX_CONCURRENCY: ${LLM_MAX_CONCURRENCY:-2}
       TESSERACT_CMD: /usr/bin/tesseract
-      STREAMLIT_SERVER_MAX_UPLOAD_SIZE: "8192"
+      STREAMLIT_SERVER_MAX_UPLOAD_SIZE: "25"
     depends_on:
       opensearch:
         condition: service_healthy
@@ -34,6 +40,10 @@ services:
         condition: service_healthy
       searxng:
         condition: service_started
+      api:
+        condition: service_healthy
+      embeddings:
+        condition: service_healthy
     networks:
       - nlp-network
     healthcheck:
@@ -68,6 +78,169 @@ services:
       timeout: 10s
       retries: 5
       start_period: 60s
+    networks:
+      - nlp-network
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ai_conference}
+      POSTGRES_USER: ${POSTGRES_USER:-ai_conference}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - nlp-network
+
+  task-redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - task_redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy noeviction
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - nlp-network
+
+  api:
+    build: .
+    image: mysearchengine-app:latest
+    restart: unless-stopped
+    command: uvicorn backend.api:app --host 0.0.0.0 --port 8000
+    volumes:
+      - ./data:/app/data
+    environment: &platform-env
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-ai_conference}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-ai_conference}
+      CELERY_BROKER_URL: redis://task-redis:6379/0
+      CELERY_RESULT_BACKEND: redis://task-redis:6379/0
+      OPENSEARCH_URL: ${OPENSEARCH_URL:-http://opensearch:9200}
+      OPENSEARCH_USER: ${OPENSEARCH_USER:-admin}
+      OPENSEARCH_PASS: ${OPENSEARCH_PASS:-admin}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      EMBEDDINGS_URL: http://embeddings:8001
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?Set OPENROUTER_API_KEY in .env}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-qwen/qwen3-30b-a3b-instruct-2507}
+      LLM_GATE_REDIS_URL: redis://task-redis:6379/1
+      LLM_MAX_CONCURRENCY: ${LLM_MAX_CONCURRENCY:-2}
+      MAX_UPLOAD_BYTES: "26214400"
+      MAX_INDEX_QUEUE: "30"
+      MAX_GENERATION_QUEUE: "80"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      task-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+    mem_limit: ${API_MEMORY_LIMIT:-768m}
+    cpus: ${API_CPU_LIMIT:-1.0}
+    networks:
+      - nlp-network
+
+  embeddings:
+    build: .
+    image: mysearchengine-app:latest
+    restart: unless-stopped
+    command: uvicorn backend.embeddings_api:app --host 0.0.0.0 --port 8001
+    volumes:
+      - ./data:/app/data
+    environment:
+      HF_HOME: /app/data/huggingface
+      EMBEDDINGS_CONCURRENCY: "1"
+      EMBEDDINGS_MAX_BATCH: "32"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8001/ready || exit 1"]
+      interval: 15s
+      # /ready intentionally loads the model on the first request. It needs a
+      # real cold-start allowance, otherwise Docker repeatedly kills the load
+      # and leaves indexing permanently waiting at its first progress step.
+      timeout: 180s
+      retries: 3
+      start_period: 15s
+    mem_limit: ${EMBEDDINGS_MEMORY_LIMIT:-2g}
+    cpus: ${EMBEDDINGS_CPU_LIMIT:-2.0}
+    networks:
+      - nlp-network
+
+  index-worker:
+    build: .
+    image: mysearchengine-app:latest
+    restart: unless-stopped
+    command: celery -A backend.celery_app.celery_app worker -Q indexing -c 1 -l INFO --hostname=index@%h
+    volumes:
+      - ./data:/app/data
+    environment: *platform-env
+    depends_on:
+      api:
+        condition: service_healthy
+      embeddings:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A backend.celery_app.celery_app inspect ping --timeout=3 | grep -q pong"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+    mem_limit: ${INDEX_WORKER_MEMORY_LIMIT:-2g}
+    cpus: ${INDEX_WORKER_CPU_LIMIT:-2.0}
+    networks:
+      - nlp-network
+
+  generation-worker:
+    build: .
+    image: mysearchengine-app:latest
+    restart: unless-stopped
+    command: celery -A backend.celery_app.celery_app worker -Q generation -c 2 -l INFO --hostname=generation@%h
+    volumes:
+      - ./data:/app/data
+    environment: *platform-env
+    depends_on:
+      api:
+        condition: service_healthy
+      embeddings:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A backend.celery_app.celery_app inspect ping --timeout=3 | grep -q pong"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+    mem_limit: ${GENERATION_WORKER_MEMORY_LIMIT:-1g}
+    cpus: ${GENERATION_WORKER_CPU_LIMIT:-1.5}
+    networks:
+      - nlp-network
+
+  dispatcher:
+    build: .
+    image: mysearchengine-app:latest
+    restart: unless-stopped
+    command: python -m backend.dispatcher
+    environment: *platform-env
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'from backend.celery_app import celery_app; assert celery_app.connection_for_read().ensure_connection(max_retries=1)' "]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    mem_limit: ${DISPATCHER_MEMORY_LIMIT:-256m}
+    cpus: ${DISPATCHER_CPU_LIMIT:-0.5}
     networks:
       - nlp-network
 
@@ -120,3 +293,5 @@ volumes:
   opensearch_data:
   redis_data:
   app_stats:
+  postgres_data:
+  task_redis_data:

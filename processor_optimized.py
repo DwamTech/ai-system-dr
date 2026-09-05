@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import PyPDF2
 from PIL import Image, ImageOps
 import pytesseract
-from pdf2image import convert_from_path
+from pdf2image import convert_from_path, pdfinfo_from_path
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
@@ -18,8 +18,10 @@ class OptimizedDocumentProcessor:
             chunk_overlap=chunk_overlap,
             separators=["\n\n", "\n", "。", "!", "؟", "?", ".", " ", ""]
         )
-        self.ocr_dpi = 150  
-        self.max_workers = min(os.cpu_count() * 2, 8)
+        self.ocr_dpi = int(os.getenv("OCR_DPI", "150"))
+        self.max_workers = max(1, min(int(os.getenv("OCR_MAX_WORKERS", "2")), os.cpu_count() or 1))
+        self.ocr_page_batch = max(1, int(os.getenv("OCR_PAGE_BATCH", "2")))
+        self.ocr_timeout = int(os.getenv("OCR_RENDER_TIMEOUT_SECONDS", "90"))
         self.reporter = reporter
 
     def _report(self, level, message):
@@ -77,6 +79,27 @@ class OptimizedDocumentProcessor:
     
     def _process_scanned_pdf(self, file_path, file_name, progress_callback=None):
         try:
+            page_count = int(pdfinfo_from_path(file_path, timeout=self.ocr_timeout).get("Pages", 0))
+            if page_count < 1:
+                return []
+            if progress_callback:
+                progress_callback("ocr", 0, page_count)
+            all_texts = []
+            # Bound peak memory: convert and OCR only a couple of pages, then
+            # close their images before moving on to the next batch.
+            for start in range(1, page_count + 1, self.ocr_page_batch):
+                end = min(page_count, start + self.ocr_page_batch - 1)
+                images = convert_from_path(file_path, dpi=self.ocr_dpi, thread_count=1, grayscale=True,
+                                           first_page=start, last_page=end, timeout=self.ocr_timeout)
+                with ThreadPoolExecutor(max_workers=min(len(images), self.max_workers)) as executor:
+                    all_texts.extend(executor.map(self._ocr_single_image_optimized, images))
+                for image in images:
+                    image.close()
+                if progress_callback:
+                    progress_callback("ocr", end, page_count)
+            full_text = "\n\n".join([f"## الصفحة {i+1}\n{text}" for i, text in enumerate(all_texts)])
+            return [Document(page_content=full_text, metadata={"source": file_name, "type": "Scanned", "processing_method": "ocr", "total_pages": page_count})]
+
             images = convert_from_path(file_path, dpi=self.ocr_dpi, thread_count=2, grayscale=True)
             if progress_callback:
                 progress_callback("ocr", 0, max(1, len(images)))

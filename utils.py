@@ -4,6 +4,7 @@
 # ==========================================
 
 import streamlit as st
+import html
 from functools import lru_cache
 from datetime import datetime
 import os
@@ -251,20 +252,32 @@ def create_fancy_download_button_optimized(
     # إنشاء الزر
     col1, col2 = st.columns([3, 1])
     
+    material_icon = icon if icon.startswith(":material/") else None
+    button_label = label if material_icon else f"{icon} {label}".strip()
+
     with col1:
         st.download_button(
-            label=f"{icon} {label}",
+            label=button_label,
             data=full_content.encode('utf-8'),
             file_name=filename,
             mime=mime_type,
             use_container_width=True,
-            key=f"download_{filename}"
+            key=f"download_{filename}",
+            icon=material_icon,
         )
     
     with col2:
         # عرض حجم الملف
         file_size = len(full_content.encode('utf-8'))
-        st.caption(f"📊 {format_file_size(file_size)}")
+        readable_size = html.escape(format_file_size(file_size))
+        st.markdown(
+            f'''<div class="download-file-size" dir="rtl">
+                    <span class="material-symbols-rounded" aria-hidden="true">data_usage</span>
+                    <span>حجم الملف</span>
+                    <b dir="ltr">{readable_size}</b>
+                </div>''',
+            unsafe_allow_html=True,
+        )
     
     return filename
 

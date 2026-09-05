@@ -4,6 +4,7 @@ import os
 import json
 import logging
 from datetime import datetime, timedelta
+from collections import OrderedDict
 
 import streamlit as st
 
@@ -64,14 +65,15 @@ class PerformanceMonitor:
 # Optimized RAG Engine
 # ============================================================
 class OptimizedRAGEngine:
-    QUERY_CACHE_VERSION = 2
+    QUERY_CACHE_VERSION = 3
 
-    def __init__(self, model_name: str | None = None, report_errors: bool = True):
+    def __init__(self, model_name: str | None = None, report_errors: bool = True,
+                 index_name: str | None = None):
         self.opensearch_url = os.getenv("OPENSEARCH_URL", "http://opensearch:9200")
         self.model_name     = model_name or os.getenv(
             "OPENROUTER_MODEL", "qwen/qwen3-30b-a3b-instruct-2507"
         )
-        self.index_name     = "knowledge_base_optimized_v2"
+        self.index_name     = index_name or "knowledge_base_optimized_v2"
         self.report_errors  = report_errors
 
         self._embeddings         = None
@@ -79,7 +81,8 @@ class OptimizedRAGEngine:
         self._vectorstore_cache  = None
 
         self._query_cache    = SmartCache() if REDIS_AVAILABLE else None
-        self._fallback_cache = {}
+        self._fallback_cache = OrderedDict()
+        self._fallback_cache_limit = max(1, int(os.getenv("LOCAL_QUERY_CACHE_LIMIT", "256")))
         self._metadata_cache = {}
 
         self.monitor = PerformanceMonitor()
@@ -109,9 +112,16 @@ class OptimizedRAGEngine:
     @property
     def embeddings(self):
         if self._embeddings is None:
-            self._embeddings = HuggingFaceEmbeddings(
-                model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-            )
+            # Workers use one dedicated embeddings service.  The local fallback
+            # keeps development and the existing single-container deployment
+            # usable when that service has not been enabled yet.
+            if os.getenv("EMBEDDINGS_URL", "").strip():
+                from backend.embeddings import RemoteEmbeddings
+                self._embeddings = RemoteEmbeddings()
+            else:
+                self._embeddings = HuggingFaceEmbeddings(
+                    model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+                )
         return self._embeddings
 
     # ── LLM ─────────────────────────────────────────────
@@ -201,7 +211,8 @@ class OptimizedRAGEngine:
             raise
 
     # ── Ingest ───────────────────────────────────────────
-    def ingest_documents_bulk(self, all_chunks, batch_size: int = 500, progress_callback=None) -> bool:
+    def ingest_documents_bulk(self, all_chunks, batch_size: int = 500,
+                              progress_callback=None, ids: list[str] | None = None) -> bool:
         if not all_chunks:
             return False
         self.monitor.start_timer("indexing_time")
@@ -209,8 +220,11 @@ class OptimizedRAGEngine:
         try:
             vs = self.get_vectorstore()
             total_chunks = len(combined)
+            if ids is not None and len(ids) != len(combined):
+                raise ValueError("A deterministic id is required for every indexed chunk")
             for i in range(0, len(combined), batch_size):
-                vs.add_documents(combined[i:i + batch_size])
+                batch_ids = ids[i:i + batch_size] if ids is not None else None
+                vs.add_documents(combined[i:i + batch_size], ids=batch_ids)
                 if progress_callback:
                     progress_callback(min(i + batch_size, total_chunks), total_chunks)
             self.stats["total_documents"] += len(combined)
@@ -229,6 +243,9 @@ class OptimizedRAGEngine:
 
     # ── Clear DB ─────────────────────────────────────────
     def clear_database(self) -> bool:
+        if os.getenv("ALLOW_LEGACY_DESTRUCTIVE_ACTIONS") != "1":
+            logger.warning("Blocked unauthorised destructive archive request")
+            return False
         try:
             vs = self.get_vectorstore()
             vs.client.indices.delete(index=self.index_name, ignore=[400, 404])
@@ -246,7 +263,9 @@ class OptimizedRAGEngine:
 
     # ── Query ────────────────────────────────────────────
     def query_with_cache(self, query: str, chat_history: list = None,
-                         active_document: str = None):
+                         active_document: str = None,
+                         active_document_version_id: str | None = None,
+                         published_version_ids: list[str] | None = None):
         self.stats["total_queries"] += 1
         relevant_history = [
             {"role": msg.get("role", ""), "content": msg.get("content", "")}
@@ -258,6 +277,8 @@ class OptimizedRAGEngine:
             "query": query,
             "history": relevant_history,
             "active_document": active_document or "__all_documents__",
+            "active_document_version_id": active_document_version_id or "__all_versions__",
+            "published_version_ids": sorted(published_version_ids or []),
             "model": self.model_name,
             "index": self.index_name,
         }, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -273,29 +294,39 @@ class OptimizedRAGEngine:
         if query_hash in self._fallback_cache:
             self.stats["cache_hits"] += 1
             self._save_stats()
+            self._fallback_cache.move_to_end(query_hash)
             return self._fallback_cache[query_hash]
 
         self.monitor.start_timer("query_time")
         try:
-            result = self._execute_query(query, chat_history, active_document)
-        except LLMProviderError as e:
-            logger.warning("LLM query failed safely: %s", e)
-            result = ("خدمة الذكاء غير متاحة مؤقتاً. حاول مرة أخرى.", [])
+            result = self._execute_query(query, chat_history, active_document,
+                                         active_document_version_id, published_version_ids)
+        except LLMProviderError:
+            # Provider errors are transient.  Never turn one into a shared,
+            # apparently successful cached answer.
+            raise
         except Exception:
             logger.exception("Query execution failed")
-            result = ("تعذر إكمال البحث في المستندات حالياً.", [])
+            raise
         self.monitor.stop_timer("query_time")
 
         if self._query_cache:
             self._query_cache.set(query_hash, list(result))
         self._fallback_cache[query_hash] = result
+        self._fallback_cache.move_to_end(query_hash)
+        while len(self._fallback_cache) > self._fallback_cache_limit:
+            self._fallback_cache.popitem(last=False)
         self._save_stats()
         return result
 
     def _execute_query(self, query: str, chat_history: list = None,
-                       active_document: str = None):
+                       active_document: str = None,
+                       active_document_version_id: str | None = None,
+                       published_version_ids: list[str] | None = None):
         search_query = self.rewrite_query(query) if len(query) < 100 else query
-        docs = self.retrieve_documents(search_query, active_document)
+        docs = self.retrieve_documents(
+            search_query, active_document, active_document_version_id, published_version_ids
+        )
         prompt = self.build_prompt({
             "question": query,
             "docs": docs,
@@ -342,13 +373,28 @@ class OptimizedRAGEngine:
         return "arabic" if arabic > len(text) * 0.2 else "english"
 
     # ── Chain ────────────────────────────────────────────
-    def retrieve_documents(self, search_query: str, active_document: str = None):
-        """Retrieve once, applying an exact source filter when a document is active."""
+    def retrieve_documents(self, search_query: str, active_document: str = None,
+                           active_document_version_id: str | None = None,
+                           published_version_ids: list[str] | None = None):
+        """Retrieve once, applying an exact document/version filter when selected."""
         vectorstore = self.get_vectorstore()
-        if not active_document:
-            return vectorstore.similarity_search(search_query, k=7)
+        if not active_document and not active_document_version_id:
+            # The database publication state is the authority. Vectors copied
+            # during a failed publish are never eligible for global retrieval.
+            if published_version_ids is None:
+                return vectorstore.similarity_search(search_query, k=7)
+            if not published_version_ids:
+                return []
+            source_filter = {"terms": {"metadata.document_version_id.keyword": published_version_ids}}
+            return vectorstore.similarity_search(search_query, k=7, search_type="script_scoring",
+                                                 space_type="l2", pre_filter=source_filter)
 
-        source_filter = {"term": {"metadata.source.keyword": active_document}}
+        if active_document_version_id:
+            source_filter = {
+                "term": {"metadata.document_version_id.keyword": active_document_version_id}
+            }
+        else:
+            source_filter = {"term": {"metadata.source.keyword": active_document}}
         docs = vectorstore.similarity_search(
             search_query,
             k=7,
@@ -360,7 +406,10 @@ class OptimizedRAGEngine:
             space_type="l2",
             pre_filter=source_filter,
         )
-        if any(doc.metadata.get("source") != active_document for doc in docs):
+        if active_document_version_id:
+            if any(doc.metadata.get("document_version_id") != active_document_version_id for doc in docs):
+                raise RuntimeError("Document retrieval filter returned an unexpected version")
+        elif any(doc.metadata.get("source") != active_document for doc in docs):
             raise RuntimeError("Document retrieval filter returned an unexpected source")
         return docs
 

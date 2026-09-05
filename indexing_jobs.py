@@ -73,12 +73,37 @@ class IndexingJobManager:
             return None
         path = self._status_path(job_id)
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            status = json.loads(path.read_text(encoding="utf-8"))
+            # Long blocking model downloads emit no progress callbacks. Compute
+            # elapsed time at read time, without inventing percentage progress.
+            if status.get("state") in ACTIVE_STATES:
+                try:
+                    started = datetime.fromisoformat(status["started_at"])
+                    status["elapsed_seconds"] = max(
+                        status.get("elapsed_seconds", 0),
+                        int((datetime.now(timezone.utc) - started).total_seconds()),
+                    )
+                except (KeyError, ValueError, TypeError):
+                    pass
+            return status
         except (OSError, json.JSONDecodeError):
             return None
 
     def get_engine(self, job_id: str | None) -> OptimizedRAGEngine | None:
-        return self._engines.get(job_id or "")
+        if not job_id:
+            return None
+        with self._lock:
+            engine = self._engines.get(job_id)
+            if engine is None:
+                status = self.get_status(job_id)
+                if status and status.get("state") == "completed":
+                    # Documents survive a container restart; reconnect lazily
+                    # rather than requiring the user to index them again.
+                    engine = OptimizedRAGEngine(
+                        model_name=status.get("model_name"), report_errors=False
+                    )
+                    self._engines[job_id] = engine
+            return engine
 
     def _update(self, job_id: str, **changes: Any) -> dict[str, Any]:
         with self._lock:
@@ -131,6 +156,7 @@ class IndexingJobManager:
             job_id = uuid.uuid4().hex
             status = {
                 "id": job_id,
+                "model_name": model_name,
                 "state": "queued",
                 "progress": 1,
                 "phase": "وضع المهمة في الطابور",
@@ -221,11 +247,18 @@ class IndexingJobManager:
             stored_files = self._save_inputs(job_id, payloads, started)
             self._set_progress(
                 job_id, started, 5,
-                state="running", phase="تجهيز مساحة الفهرسة",
-                message="يجري تحميل نموذج embeddings والاتصال بمحرك البحث. قد يستغرق التشغيل الأول وقتاً إضافياً.",
+                state="running", phase="تجهيز نموذج الفهرسة",
+                message="يجري تحميل نموذج الفهرسة من النسخة المحلية، أو تنزيله في أول تشغيل فقط. نسبة هذه المرحلة لا تتغير حتى يجهز النموذج؛ الوقت المنقضي يُحدّث تلقائياً.",
                 active_file="",
             )
             engine = OptimizedRAGEngine(model_name=config["model_name"], report_errors=False)
+            # Separate model readiness from the search connection in the UI.
+            _ = engine.embeddings
+            self._set_progress(
+                job_id, started, 8,
+                state="running", phase="الاتصال بمحرك البحث",
+                message="نموذج الفهرسة جاهز. يجري تجهيز الاتصال بمحرك البحث قبل قراءة الملفات.",
+            )
             engine.get_vectorstore()
             processor = OptimizedDocumentProcessor(
                 chunk_size=config["chunk_size"],

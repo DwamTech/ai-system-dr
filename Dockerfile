@@ -44,6 +44,10 @@ COPY research_extractor.py .
 COPY utils.py .
 COPY app_optimized.py .
 COPY style.css .
+COPY dashboard.js .
+COPY platform_client.py .
+COPY backend ./backend
+COPY .streamlit/config.toml .streamlit/config.toml
 COPY redis_cache.py .
 COPY web_search.py .
 
