@@ -652,6 +652,80 @@ def start_background_indexing(uploaded_files):
     st.rerun()
 
 
+def _available_documents():
+    return list(dict.fromkeys(
+        list(st.session_state.indexed_files) + list(st.session_state.last_full_text.keys())
+    ))
+
+
+def render_primary_workflow():
+    """Render the single real upload → index → select workflow in main content."""
+    with st.container(key="primary_workflow"):
+        if st.session_state.get("indexing_job_id"):
+            render_indexing_job_status()
+
+        uploaded_files = st.session_state.get("tour_target_upload", []) or []
+        available_documents = _available_documents()
+        indexing_is_running = indexing_jobs.has_running_job()
+        has_active_document = bool(st.session_state.active_document)
+
+        if not available_documents:
+            st.markdown(
+                '<section class="workflow-panel__intro" dir="rtl"><span class="material-symbols-rounded">upload_file</span><div><h2>ابدأ برفع مستند</h2><p>ارفع ملف PDF أو أكثر لبدء البحث والتحليل.</p></div></section>',
+                unsafe_allow_html=True,
+            )
+            uploaded_files = st.file_uploader(
+                "رفع المستندات",
+                type=["pdf"],
+                accept_multiple_files=True,
+                help="يمكنك رفع عدة ملفات PDF مرة واحدة.",
+                key="tour_target_upload",
+            ) or []
+
+        if uploaded_files and not st.session_state.tour_index_completed:
+            total_size = sum(file.size for file in uploaded_files)
+            st.markdown(
+                f'<div class="workflow-panel__selected" dir="rtl"><span class="material-symbols-rounded">description</span><div><strong>المستندات جاهزة للمعالجة</strong><small>{len(uploaded_files)} ملف · {format_file_size(total_size)}</small></div></div>',
+                unsafe_allow_html=True,
+            )
+            if st.button(
+                "الفهرسة جارية في الخلفية" if indexing_is_running else "ابدأ الفهرسة",
+                type="primary",
+                icon=":material/hourglass_top:" if indexing_is_running else ":material/auto_awesome_motion:",
+                use_container_width=True,
+                key="tour_target_index_background",
+                disabled=indexing_is_running,
+            ):
+                start_background_indexing(uploaded_files)
+        elif available_documents and not has_active_document:
+            st.markdown(
+                '<section class="workflow-panel__intro workflow-panel__intro--compact" dir="rtl"><span class="material-symbols-rounded">touch_app</span><div><h2>اختر المستند</h2><p>حدد الملف الذي تريد السؤال عنه قبل بدء المحادثة.</p></div></section>',
+                unsafe_allow_html=True,
+            )
+            document_options = ["كل المستندات"] + available_documents
+            current_option = st.session_state.active_document or "كل المستندات"
+            if current_option not in document_options:
+                current_option = "كل المستندات"
+            selected_document = st.selectbox(
+                "المستند النشط للبحث والتحليل",
+                document_options,
+                index=document_options.index(current_option),
+                help="اختر ملفاً لعزل إجابات البحث عليه، أو اختر كل المستندات للبحث العام.",
+                key="active_document_selector",
+            )
+            st.session_state.active_document = (
+                None if selected_document == "كل المستندات" else selected_document
+            )
+        elif has_active_document:
+            active_label = html.escape(st.session_state.active_document)
+            st.markdown(
+                f'<div class="workflow-panel__active" dir="rtl"><span class="material-symbols-rounded">task</span><div><small>المستند النشط</small><strong dir="auto">{active_label}</strong></div><b>جاهز للتحليل</b></div>',
+                unsafe_allow_html=True,
+            )
+
+    return uploaded_files
+
+
 def render_product_header():
     st.markdown(
         """
@@ -691,8 +765,15 @@ def render_workflow_steps(uploaded_files):
         steps.append(
             f'<div class="workflow-step {state}"><span>{marker}</span><small>{label}</small></div>'
         )
+    mobile_step = min(max(current_step, 1), len(labels))
+    mobile_progress = int(mobile_step * 100 / len(labels))
     st.markdown(
-        f'<div class="workflow-steps" dir="rtl">{"".join(steps)}</div>',
+        f'''<div class="workflow-mobile-progress" dir="rtl">
+                <small>الخطوة {mobile_step} من {len(labels)}</small>
+                <strong>{labels[mobile_step - 1]}</strong>
+                <span><b style="width:{mobile_progress}%"></b></span>
+            </div>
+            <div class="workflow-steps" dir="rtl">{"".join(steps)}</div>''',
         unsafe_allow_html=True,
     )
 
@@ -814,6 +895,14 @@ TOUR_STEPS = {
     5: ("أدوات المستند", "أصبح المستند جاهزًا. يمكنك الآن استخدام التلخيص، الكيانات، الترجمة، التحليل، الخريطة الذهنية، والبحث الأكاديمي."),
 }
 
+TOUR_MOBILE_STEPS = {
+    1: "ارفع ملف PDF أو أكثر للبدء.",
+    2: "جهّز الملفات حتى يستطيع النظام البحث داخلها.",
+    3: "حدد الملف الذي تريد السؤال عنه.",
+    4: "اكتب سؤالك عن المستند المحدد.",
+    5: "لخّص، ترجم، حلّل، وابحث عند الحاجة.",
+}
+
 
 def end_tour(completed=False):
     st.session_state.tour_active = False
@@ -876,7 +965,7 @@ def render_guided_tour():
             <div class="tour-card" dir="rtl">
                 <div class="tour-card__eyebrow"><span>جولة تعريفية</span><b>الخطوة {step} من 5</b></div>
                 <div class="tour-progress"><b style="width:{step * 20}%"></b></div>
-                <h3>{title}</h3><p>{description}</p>
+                <h3>{title}</h3><p><span class="tour-card__desktop-copy">{description}</span><span class="tour-card__mobile-copy">{TOUR_MOBILE_STEPS[step]}</span></p>
             </div>
             """,
             unsafe_allow_html=True,
@@ -1053,85 +1142,22 @@ with st.sidebar:
         """,
         unsafe_allow_html=True,
     )
-    if st.session_state.rag_engine:
-        st.caption("● مساحة العمل جاهزة")
-    else:
-        st.caption("○ ستُجهّز مساحة العمل عند الفهرسة")
-
-    with st.container(key="indexing_job_status"):
-        render_indexing_job_status()
-    
-    # --- رفع الملفات ---
-    st.markdown("### المستندات")
-    
-    available_documents = list(dict.fromkeys(
-        list(st.session_state.indexed_files) + list(st.session_state.last_full_text.keys())
-    ))
-    if available_documents:
-        document_options = ["كل المستندات"] + available_documents
-        current_option = st.session_state.active_document or "كل المستندات"
-        if current_option not in document_options:
-            current_option = "كل المستندات"
-        selected_document = st.selectbox(
-            "المستند النشط للبحث والتحليل",
-            document_options,
-            index=document_options.index(current_option),
-            help="اختر ملفاً لعزل إجابات البحث عليه، أو اختر كل المستندات للبحث العام.",
-            key="active_document_selector",
+    st.caption("التنقل والمساعدة")
+    if st.session_state.active_document:
+        st.markdown(
+            f'<div class="sidebar-document-summary" dir="rtl"><small>المستند النشط</small><strong dir="auto">{html.escape(st.session_state.active_document)}</strong></div>',
+            unsafe_allow_html=True,
         )
-        st.session_state.active_document = (
-            None if selected_document == "كل المستندات" else selected_document
-        )
-        if st.session_state.active_document:
-            st.caption(f"جاهز للتحليل: {st.session_state.active_document}")
-    else:
-        st.caption("ابدأ برفع ملف PDF أو أكثر.")
 
-    st.markdown(
-        """
-        <div class="sidebar-upload-context" dir="rtl">
-            <strong>رفع المستندات</strong>
-            <span>اسحب ملفات PDF هنا أو اخترها من جهازك</span>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    # The emergency legacy path remains available only when explicitly enabled.
+    # Its normal controls live in the main workflow panel, not the sidebar.
+    uploaded_files = st.session_state.get("tour_target_upload", []) or []
+    force_ocr = st.session_state.force_ocr
+    process_method = (
+        "متسلسل (مناسب لملفات كبيرة)"
+        if st.session_state.processing_mode == "متسلسل" or len(uploaded_files) == 1
+        else "متوازي (مناسب لملفات متعددة)"
     )
-    uploaded_files = st.file_uploader(
-        "ارفع المستندات",
-        type=["pdf"],
-        accept_multiple_files=True,
-        help="يمكنك رفع عدة ملفات PDF مرة واحدة",
-        key="tour_target_upload",
-    )
-    
-    if uploaded_files:
-        # معلومات الملفات
-        total_size = sum(f.size for f in uploaded_files)
-        st.caption(f"{len(uploaded_files)} ملف | الحجم الإجمالي: {format_file_size(total_size)}")
-        
-        configured_mode = st.session_state.processing_mode
-        if configured_mode == "متسلسل":
-            process_method = "متسلسل (مناسب لملفات كبيرة)"
-        elif configured_mode == "متوازي":
-            process_method = "متوازي (مناسب لملفات متعددة)"
-        else:
-            process_method = (
-                "متسلسل (مناسب لملفات كبيرة)"
-                if len(uploaded_files) == 1
-                else "متوازي (مناسب لملفات متعددة)"
-            )
-        force_ocr = st.session_state.force_ocr
-    
-    indexing_is_running = indexing_jobs.has_running_job()
-    if uploaded_files and st.button(
-        "الفهرسة جارية في الخلفية" if indexing_is_running else "بدء الفهرسة",
-        type="primary",
-        icon=":material/hourglass_top:" if indexing_is_running else ":material/auto_awesome_motion:",
-        use_container_width=True,
-        key="tour_target_index_background",
-        disabled=indexing_is_running,
-    ):
-        start_background_indexing(uploaded_files)
 
     # Emergency compatibility fallback, deliberately disabled in the normal
     # deployment. The durable background path above is the supported flow.
@@ -1311,9 +1337,11 @@ with st.sidebar:
 # 4. المحتوى الرئيسي
 # ==========================================
 
-sync_tour_with_actions(uploaded_files)
 render_product_header()
+uploaded_files = st.session_state.get("tour_target_upload", []) or []
+sync_tour_with_actions(uploaded_files)
 render_workflow_steps(uploaded_files)
+uploaded_files = render_primary_workflow()
 render_document_context()
 render_guided_tour()
 

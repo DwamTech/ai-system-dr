@@ -807,7 +807,7 @@ body:has(.tour-step-5) .st-key-tour_coach { right: 3rem; bottom: 2.5rem; }
 }
 
 body:has(.tour-step-1) .st-key-tour_target_upload [data-testid="stFileUploader"],
-body:has(.tour-step-2) .st-key-tour_target_index,
+body:has(.tour-step-2) .st-key-tour_target_index_background,
 body:has(.tour-step-3) .st-key-active_document_selector,
 body:has(.tour-step-4) .st-key-tour_target_chat,
 body:has(.tour-step-5) .st-key-tour_target_tools [role="tablist"] {
@@ -830,7 +830,7 @@ body:has(.tour-step-4) .st-key-tour_target_chat {
 }
 
 body:has(.tour-step-1) .st-key-tour_target_upload [data-testid="stFileUploader"],
-body:has(.tour-step-2) .st-key-tour_target_index,
+body:has(.tour-step-2) .st-key-tour_target_index_background,
 body:has(.tour-step-3) .st-key-active_document_selector {
     isolation: isolate;
 }
@@ -1340,5 +1340,510 @@ input[type="email"],
         right: auto;
         left: auto;
         width: 100%;
+    }
+}
+
+/* Mobile-first workflow architecture: core actions live in the workspace,
+   while the native right rail/drawer is only secondary navigation. */
+.workflow-mobile-progress {
+    display: none;
+}
+
+.st-key-primary_workflow {
+    max-width: 1160px;
+    margin: 1rem auto 1.25rem;
+    padding: 1rem 1.15rem;
+    background: linear-gradient(135deg, rgba(21, 33, 45, .9), rgba(14, 22, 30, .9));
+    border: 1px solid rgba(54, 76, 98, .9);
+    border-radius: var(--radius-lg);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, .13);
+}
+
+.workflow-panel__intro,
+.workflow-panel__selected,
+.workflow-panel__active {
+    display: flex;
+    align-items: center;
+    gap: .8rem;
+}
+
+.workflow-panel__intro {
+    margin-bottom: .85rem;
+}
+
+.workflow-panel__intro > .material-symbols-rounded,
+.workflow-panel__selected > .material-symbols-rounded,
+.workflow-panel__active > .material-symbols-rounded {
+    display: grid;
+    flex: 0 0 38px;
+    width: 38px;
+    height: 38px;
+    place-items: center;
+    color: var(--primary-hover);
+    background: rgba(91, 140, 255, .12);
+    border-radius: 10px;
+}
+
+.workflow-panel__intro h2 {
+    margin: 0;
+    font-size: 1.12rem;
+}
+
+.workflow-panel__intro p,
+.workflow-panel__selected small {
+    display: block;
+    margin: .12rem 0 0;
+    color: var(--text-muted);
+    font-size: .84rem;
+}
+
+.workflow-panel__selected,
+.workflow-panel__active {
+    justify-content: flex-start;
+    margin: .8rem 0;
+    padding: .72rem .8rem;
+    background: rgba(91, 140, 255, .06);
+    border-radius: var(--radius-md);
+}
+
+.workflow-panel__selected strong,
+.workflow-panel__active strong,
+.workflow-panel__active small {
+    display: block;
+}
+
+.workflow-panel__active {
+    gap: .7rem;
+}
+
+.workflow-panel__active strong {
+    max-width: min(42rem, 62vw);
+    overflow: hidden;
+    color: var(--text);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.workflow-panel__active small {
+    color: var(--text-muted);
+    font-size: .75rem;
+}
+
+.workflow-panel__active b {
+    margin-right: auto;
+    color: var(--primary-hover);
+    font-size: .78rem;
+    font-weight: 650;
+}
+
+.sidebar-document-summary {
+    margin: .75rem 0 1rem;
+    padding: .65rem .7rem;
+    background: rgba(91, 140, 255, .06);
+    border: 1px solid rgba(91, 140, 255, .16);
+    border-radius: var(--radius-sm);
+}
+
+.sidebar-document-summary small,
+.sidebar-document-summary strong {
+    display: block;
+}
+
+.sidebar-document-summary small {
+    color: var(--text-muted);
+    font-size: .72rem;
+}
+
+.sidebar-document-summary strong {
+    overflow: hidden;
+    margin-top: .15rem;
+    color: var(--text);
+    font-size: .8rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.tour-card__mobile-copy {
+    display: none;
+}
+
+/* Streamlit 1.63 renders tabs with React Aria roles rather than BaseWeb. */
+.stTabs [role="tablist"] {
+    gap: .25rem;
+    overflow-x: auto;
+    scrollbar-width: none;
+    border-bottom: 1px solid var(--border);
+}
+
+.stTabs [role="tab"] {
+    flex: 0 0 auto;
+    min-height: 46px;
+    padding: 0 .9rem;
+    color: var(--text-muted);
+    background: transparent;
+    border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+    font-size: .95rem;
+    font-weight: 650;
+}
+
+.stTabs [role="tab"][aria-selected="true"] {
+    color: var(--text);
+    background: rgba(91, 140, 255, .08);
+}
+
+@media (max-width: 1199px) and (min-width: 769px) {
+    .stMainBlockContainer,
+    .block-container {
+        padding-right: clamp(1.25rem, 3vw, 2.25rem);
+        padding-left: clamp(1.25rem, 3vw, 2.25rem);
+    }
+}
+
+@media (max-width: 768px) {
+    .product-header {
+        padding: .25rem 0 .45rem;
+    }
+
+    .product-kicker {
+        margin-bottom: .12rem;
+        font-size: .7rem;
+    }
+
+    .product-header h1 {
+        font-size: 1.38rem;
+        line-height: 1.45;
+    }
+
+    .product-header p {
+        margin-top: .15rem;
+        font-size: .84rem;
+        line-height: 1.65;
+    }
+
+    /* Replace four squeezed desktop cards with one explicit mobile step. */
+    .workflow-steps {
+        display: none;
+    }
+
+    .workflow-mobile-progress {
+        display: block;
+        margin: .65rem 0 .8rem;
+        padding: .72rem .8rem;
+        background: rgba(91, 140, 255, .07);
+        border: 1px solid rgba(91, 140, 255, .2);
+        border-radius: var(--radius-md);
+    }
+
+    .workflow-mobile-progress small,
+    .workflow-mobile-progress strong {
+        display: block;
+    }
+
+    .workflow-mobile-progress small {
+        color: var(--text-muted);
+        font-size: .74rem;
+    }
+
+    .workflow-mobile-progress strong {
+        margin-top: .08rem;
+        color: var(--text);
+        font-size: .95rem;
+        font-weight: 650;
+    }
+
+    .workflow-mobile-progress > span {
+        display: block;
+        height: 4px;
+        margin-top: .55rem;
+        overflow: hidden;
+        background: var(--border);
+        border-radius: 999px;
+    }
+
+    .workflow-mobile-progress > span > b {
+        display: block;
+        height: 100%;
+        background: var(--primary);
+        border-radius: inherit;
+    }
+
+    .st-key-primary_workflow {
+        margin: .65rem 0 1rem;
+        padding: .9rem;
+        border-radius: 14px;
+    }
+
+    .workflow-panel__intro {
+        align-items: flex-start;
+        margin-bottom: .75rem;
+    }
+
+    .workflow-panel__intro h2 {
+        font-size: 1.03rem;
+    }
+
+    .workflow-panel__intro p,
+    .workflow-panel__selected small {
+        font-size: .86rem;
+        line-height: 1.7;
+    }
+
+    .st-key-primary_workflow [data-testid="stFileUploaderDropzone"] {
+        min-height: 116px;
+        padding: .85rem;
+    }
+
+    .st-key-primary_workflow .stButton > button,
+    .st-key-primary_workflow [data-testid="stBaseButton-secondary"],
+    .st-key-primary_workflow [data-testid="stBaseButton-primary"] {
+        min-height: 46px;
+        font-size: .96rem;
+    }
+
+    .document-context {
+        margin-bottom: 1rem;
+        padding: .72rem .8rem;
+    }
+
+    .document-context strong {
+        max-width: calc(100vw - 8rem);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    /* The mobile tools are a readable two-column selector grid, not a clipped rail. */
+    .stTabs [data-baseweb="tab-list"] {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: .45rem;
+        overflow: visible;
+        padding-bottom: .35rem;
+        border-bottom: 0;
+    }
+
+    .stTabs [data-baseweb="tab"] {
+        width: 100%;
+        min-width: 0;
+        min-height: 46px;
+        height: auto;
+        padding: .5rem .6rem;
+        justify-content: flex-start;
+        color: var(--text-muted);
+        border: 1px solid rgba(38, 51, 66, .92);
+        border-radius: var(--radius-sm);
+        font-size: .84rem;
+        line-height: 1.35;
+        white-space: normal;
+    }
+
+    .stTabs [aria-selected="true"] {
+        color: var(--text);
+        border-color: rgba(91, 140, 255, .6);
+        background: rgba(91, 140, 255, .13);
+    }
+
+    .stTabs [data-baseweb="tab-highlight"] {
+        display: none;
+    }
+
+    .stTabs [role="tablist"] {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: .45rem;
+        overflow: visible;
+        padding-bottom: .35rem;
+        border-bottom: 0;
+    }
+
+    .stTabs [role="tab"] {
+        width: 100%;
+        min-width: 0;
+        min-height: 46px;
+        height: auto;
+        padding: .5rem .6rem;
+        justify-content: flex-start;
+        color: var(--text-muted);
+        border: 1px solid rgba(38, 51, 66, .92);
+        border-radius: var(--radius-sm);
+        font-size: .84rem;
+        line-height: 1.35;
+        white-space: normal;
+    }
+
+    .stTabs [role="tab"][aria-selected="true"] {
+        color: var(--text);
+        border-color: rgba(91, 140, 255, .6);
+        background: rgba(91, 140, 255, .13);
+    }
+
+    .st-key-chat_workspace {
+        width: 100%;
+        margin-top: 0;
+    }
+
+    .chat-workspace__header {
+        margin: 1rem 0 .75rem;
+        padding-bottom: .75rem;
+    }
+
+    .chat-workspace__header h2 {
+        font-size: 1.35rem;
+    }
+
+    .chat-workspace__header p {
+        font-size: .9rem;
+        line-height: 1.7;
+    }
+
+    .chat-workspace__scope {
+        padding: .62rem .7rem;
+    }
+
+    .st-key-chat_transcript {
+        min-height: 17rem;
+        padding-bottom: .7rem;
+    }
+
+    .st-key-chat_transcript [data-testid="stChatMessage"] {
+        margin: .65rem 0;
+        padding: .9rem;
+        border-radius: 12px;
+    }
+
+    .st-key-chat_transcript [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) {
+        max-width: 92%;
+    }
+
+    .st-key-chat_transcript [data-testid="stChatMessageContent"] {
+        font-size: .98rem;
+        line-height: 1.85;
+    }
+
+    .chat-sources__list {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .chat-source-chip {
+        width: 100%;
+        min-height: 38px;
+        box-sizing: border-box;
+    }
+
+    .st-key-tour_target_chat {
+        padding: .75rem 0 1rem;
+    }
+
+    [data-testid="stChatInput"] > div {
+        min-height: 58px;
+        border-radius: 13px;
+    }
+
+    [data-testid="stChatInput"] textarea {
+        min-height: 58px;
+        font-size: 1rem;
+    }
+
+    .empty-state {
+        align-items: center;
+        flex-direction: column;
+        gap: .55rem;
+        padding: 1.15rem .8rem;
+        text-align: center;
+        background: transparent;
+        border-color: rgba(91, 140, 255, .13);
+    }
+
+    .empty-state p {
+        font-size: .9rem;
+        line-height: 1.7;
+    }
+
+    .advanced-analysis-divider {
+        margin: 1.35rem 0 .75rem;
+    }
+
+    /* The tour card stays compact enough to leave its main-workspace target visible. */
+    body:not(:has(.tour-step-4)) .st-key-tour_coach {
+        max-height: min(40vh, 300px);
+        padding: .72rem .8rem .68rem;
+    }
+
+    body:has(.tour-step-4) .st-key-tour_coach {
+        max-height: min(38vh, 280px);
+        padding: .72rem .8rem .68rem;
+    }
+
+    /* Index and tools live lower in the mobile workspace; keep their real
+       controls visible below a compact top coach instead of covering them. */
+    body:has(.tour-step-2) .st-key-tour_coach,
+    body:has(.tour-step-5) .st-key-tour_coach {
+        inset: calc(3.75rem + env(safe-area-inset-top)) 1rem auto 1rem;
+        max-height: min(36vh, 270px);
+    }
+
+    .tour-card h3 {
+        margin: .45rem 0 .16rem;
+        font-size: 1.02rem;
+    }
+
+    .tour-card p {
+        font-size: .84rem;
+        line-height: 1.6;
+    }
+
+    .tour-card__desktop-copy {
+        display: none;
+    }
+
+    .tour-card__mobile-copy {
+        display: inline;
+    }
+
+    .tour-progress {
+        margin: .22rem 0 .55rem;
+    }
+
+    .st-key-tour_coach .stButton > button {
+        min-height: 42px;
+        padding: .35rem .45rem;
+        font-size: .82rem;
+    }
+
+    [data-testid="stDialog"] > div {
+        width: min(100vw - 1.25rem, 42rem);
+        max-width: none;
+        margin: 0 auto;
+    }
+}
+
+@media (max-width: 430px) {
+    .product-kicker {
+        display: none;
+    }
+
+    .product-header h1 {
+        font-size: 1.25rem;
+    }
+
+    .product-header p {
+        font-size: .8rem;
+    }
+
+    .stTabs [data-baseweb="tab"] {
+        min-height: 44px;
+        padding: .45rem .5rem;
+        font-size: .79rem;
+    }
+
+    .stTabs [role="tab"] {
+        min-height: 44px;
+        padding: .45rem .5rem;
+        font-size: .79rem;
+    }
+
+    .workflow-panel__active b {
+        display: none;
     }
 }
