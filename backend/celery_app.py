@@ -19,6 +19,7 @@ celery_app.conf.update(
     task_routes={
         "backend.tasks.index_document": {"queue": "indexing"},
         "backend.tasks.generate_answer": {"queue": "generation"},
+        "backend.tasks.run_tool": {"queue": "tools"},
     },
     task_acks_late=True,
     task_reject_on_worker_lost=True,

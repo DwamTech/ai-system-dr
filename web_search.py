@@ -4,8 +4,12 @@
 # ============================================
 
 import os
+import threading
+import time
 import requests
 from typing import Optional
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 
 class WebSearchEngine:
@@ -21,6 +25,10 @@ class WebSearchEngine:
         "أخبار": "news",
         "ويكيبيديا": "general",
     }
+    _circuit_lock = threading.Lock()
+    _circuit_open_until = 0.0
+    _capabilities = None
+    _capabilities_checked_at = 0.0
     
     def __init__(self, searxng_url=None):
         """
@@ -29,17 +37,50 @@ class WebSearchEngine:
         """
         self.base_url = searxng_url or os.getenv("SEARXNG_URL", "http://localhost:8888")
         self._available = None
+        self._available_checked_at = 0.0
+        self._health_ttl_seconds = float(os.getenv("SEARXNG_HEALTH_TTL_SECONDS", "15"))
+        retry = Retry(total=2, connect=2, read=1, backoff_factor=0.25, status_forcelist=(502, 503, 504), allowed_methods=("GET",))
+        self.session = requests.Session()
+        self.session.mount("http://", HTTPAdapter(max_retries=retry))
+        self.session.mount("https://", HTTPAdapter(max_retries=retry))
+
+    def _open_circuit(self) -> None:
+        with self._circuit_lock:
+            type(self)._circuit_open_until = time.monotonic() + self._health_ttl_seconds
+
+    def available_engines(self) -> set[str]:
+        current = time.monotonic()
+        cls = type(self)
+        if cls._capabilities is not None and current - cls._capabilities_checked_at < self._health_ttl_seconds:
+            return set(cls._capabilities)
+        try:
+            response = self.session.get(f"{self.base_url}/config", timeout=(3, 5))
+            response.raise_for_status()
+            engines = {
+                str(item.get("name", "")).strip().casefold()
+                for item in response.json().get("engines", [])
+                if not item.get("disabled") and item.get("name")
+            }
+        except Exception:
+            engines = set()
+        cls._capabilities, cls._capabilities_checked_at = engines, current
+        return engines
     
     @property
     def is_available(self) -> bool:
         """تحقق من توفر SearXNG"""
-        if self._available is not None:
+        if time.monotonic() < type(self)._circuit_open_until:
+            return False
+        if self._available is not None and (time.monotonic() - self._available_checked_at) < self._health_ttl_seconds:
             return self._available
         try:
-            response = requests.get(f"{self.base_url}/healthz", timeout=3)
+            response = self.session.get(f"{self.base_url}/healthz", timeout=(2, 3))
             self._available = response.status_code == 200
         except Exception:
             self._available = False
+        if not self._available:
+            self._open_circuit()
+        self._available_checked_at = time.monotonic()
         return self._available
     
     def search(self, query: str, category: str = "عام", language: str = "ar",
@@ -56,6 +97,9 @@ class WebSearchEngine:
         Returns:
             dict مع المفاتيح: success, results, query, total, error
         """
+        query = query.strip()
+        if not query:
+            return {"success": False, "results": [], "query": query, "total": 0, "error": "اكتب نص البحث أولاً."}
         if not self.is_available:
             return {
                 "success": False,
@@ -78,14 +122,22 @@ class WebSearchEngine:
                 "pageno": 1,
             }
             
-            # إضافة محركات أكاديمية للبحث الأكاديمي
+            available = self.available_engines()
+            # لا نرسل محركًا غير متاح، ولا نسقط بصمت إلى تصنيف مختلف.
             if eng_category == "science":
-                params["engines"] = "google scholar,arxiv,semantic scholar,pubmed"
+                academic = [name for name in ("google scholar", "arxiv", "semantic scholar", "pubmed", "openairepublications") if name in available]
+                if not academic:
+                    return {"success": False, "results": [], "query": query, "total": 0, "error": "لا يوجد محرك أكاديمي متاح حاليًا."}
+                params["engines"] = ",".join(academic)
+            elif category == "ويكيبيديا":
+                if "wikipedia" not in available:
+                    return {"success": False, "results": [], "query": query, "total": 0, "error": "محرك ويكيبيديا غير متاح حاليًا."}
+                params["engines"] = "wikipedia"
             
-            response = requests.get(
+            response = self.session.get(
                 f"{self.base_url}/search",
                 params=params,
-                timeout=15
+                timeout=(3, 15)
             )
             
             if response.status_code != 200:
@@ -122,15 +174,17 @@ class WebSearchEngine:
                 results.append(result)
             
             return {
-                "success": True,
+                "success": bool(results),
                 "results": results,
                 "query": query,
                 "total": len(results),
                 "suggestions": data.get("suggestions", []),
-                "error": None
+                "error": None if results else "لم يتم العثور على نتائج."
             }
             
         except requests.Timeout:
+            self._available = None
+            self._open_circuit()
             return {
                 "success": False,
                 "results": [],
@@ -139,6 +193,8 @@ class WebSearchEngine:
                 "error": "انتهت مهلة البحث. حاول مرة أخرى."
             }
         except Exception:
+            self._available = None
+            self._open_circuit()
             return {
                 "success": False,
                 "results": [],

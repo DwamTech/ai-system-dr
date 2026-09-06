@@ -8,23 +8,29 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import os
 import secrets
+import shutil
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend.db import SessionLocal, init_db
+from backend.celery_app import celery_app
 from backend.models import (
-    Conversation, Document, DocumentVersion, Job, JobSubscription, Message,
-    Outbox, Upload, UserSession,
+    Conversation, Document, DocumentArtifact, DocumentVersion, Job, JobSubscription, Message,
+    Outbox, ToolExecution, Upload, UserSession,
 )
+from backend.artifacts import ArtifactError, DOCUMENT_ROOT, read_tool_result
+from backend.tool_contracts import ToolJobRequest, canonical_hash, validated_options
 
 
 MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(25 * 1024 * 1024)))
@@ -33,7 +39,11 @@ MAX_INDEX_QUEUE = int(os.getenv("MAX_INDEX_QUEUE", "30"))
 MAX_GENERATION_QUEUE = int(os.getenv("MAX_GENERATION_QUEUE", "80"))
 MAX_OWNER_INDEX_JOBS = int(os.getenv("MAX_OWNER_INDEX_JOBS", "3"))
 MAX_OWNER_GENERATION_JOBS = int(os.getenv("MAX_OWNER_GENERATION_JOBS", "1"))
+MAX_TOOL_QUEUE = int(os.getenv("MAX_TOOL_QUEUE", "60"))
+MAX_OWNER_TOOL_JOBS = int(os.getenv("MAX_OWNER_TOOL_JOBS", "2"))
+TOOL_JOB_WAIT_SECONDS = int(os.getenv("TOOL_JOB_WAIT_SECONDS", "1800"))
 JOB_WAIT_SECONDS = int(os.getenv("JOB_WAIT_SECONDS", "1800"))
+MAX_JOB_ATTEMPTS = int(os.getenv("MAX_JOB_ATTEMPTS", "3"))
 SESSION_TTL_DAYS = int(os.getenv("SESSION_TTL_DAYS", "30"))
 ADMIN_METRICS_TOKEN = os.getenv("ADMIN_METRICS_TOKEN", "")
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "/app/data/uploads"))
@@ -119,6 +129,9 @@ def job_payload(job: Job) -> dict:
         "started_at": job.started_at.isoformat() if job.started_at else None,
         "finished_at": job.finished_at.isoformat() if job.finished_at else None,
         "deadline_at": job.deadline_at.isoformat() if job.deadline_at else None,
+        "attempt": job.attempt, "max_attempts": job.max_attempts,
+        "recovery_reason": job.recovery_reason,
+        "error_code": job.error_code,
     }
 
 
@@ -152,6 +165,34 @@ def health(db: Session = Depends(db_session)) -> dict:
     return {"status": "ok", "database": bool(db.execute(select(1)).scalar())}
 
 
+@app.get("/ready")
+def readiness(db: Session = Depends(db_session)) -> dict:
+    """Verify the dependencies needed to accept durable background work."""
+    checks: dict[str, object] = {"database": bool(db.execute(select(1)).scalar())}
+    try:
+        with celery_app.connection_for_read() as connection:
+            connection.ensure_connection(max_retries=1)
+        checks["broker"] = True
+    except Exception:
+        checks["broker"] = False
+    storage_root = DOCUMENT_ROOT.parent
+    storage_root.mkdir(parents=True, exist_ok=True)
+    free_bytes = shutil.disk_usage(storage_root).free
+    checks["artifact_storage"] = {"writable": os.access(storage_root, os.W_OK), "free_bytes": free_bytes}
+    try:
+        queues = celery_app.control.inspect(timeout=2).active_queues() or {}
+        available = {queue.get("name") for worker in queues.values() for queue in worker}
+    except Exception:
+        available = set()
+    required = {"indexing", "generation", "tools", "tools-fast"}
+    checks["worker_queues"] = {"available": sorted(available), "missing": sorted(required - available)}
+    ready = bool(checks["database"] and checks["broker"] and checks["artifact_storage"]["writable"]
+                 and free_bytes >= 100 * 1024 * 1024 and not checks["worker_queues"]["missing"])
+    if not ready:
+        raise HTTPException(503, detail={"status": "not_ready", "checks": checks})
+    return {"status": "ready", "checks": checks}
+
+
 @app.get("/metrics")
 def metrics(x_admin_token: str | None = Header(default=None), db: Session = Depends(db_session)) -> dict:
     """Small protected operational view for alerts and capacity decisions."""
@@ -161,8 +202,37 @@ def metrics(x_admin_token: str | None = Header(default=None), db: Session = Depe
     rows = db.execute(select(Job.queue, Job.status, func.count()).group_by(Job.queue, Job.status)).all()
     counts = {f"{queue}:{status}": count for queue, status, count in rows}
     oldest = db.scalar(select(func.min(Job.created_at)).where(Job.status.in_(active)))
-    return {"queues": counts, "oldest_active_at": oldest.isoformat() if oldest else None,
-            "active_jobs": sum(count for key, count in counts.items() if key.rsplit(":", 1)[-1] in active)}
+    recent_tools = db.execute(
+        select(Job, ToolExecution).join(ToolExecution, ToolExecution.job_id == Job.id)
+        .order_by(Job.created_at.desc()).limit(1000)
+    ).all()
+    tool_metrics: dict[str, dict] = {}
+    for job, execution in recent_tools:
+        item = tool_metrics.setdefault(execution.tool_type, {
+            "statuses": {}, "failures": {}, "retries": 0,
+            "queue_wait_seconds": [], "execution_seconds": [],
+        })
+        item["statuses"][job.status] = item["statuses"].get(job.status, 0) + 1
+        if job.error_code:
+            item["failures"][job.error_code] = item["failures"].get(job.error_code, 0) + 1
+        item["retries"] += max(0, (job.attempt or 0) - 1)
+        if job.started_at and job.created_at:
+            item["queue_wait_seconds"].append(max(0, (job.started_at - job.created_at).total_seconds()))
+        if job.finished_at and job.started_at:
+            item["execution_seconds"].append(max(0, (job.finished_at - job.started_at).total_seconds()))
+    for item in tool_metrics.values():
+        for field in ("queue_wait_seconds", "execution_seconds"):
+            values = sorted(item[field])
+            item[field] = {
+                "p50": round(values[len(values) // 2], 3) if values else None,
+                "p95": round(values[min(len(values) - 1, int(len(values) * 0.95))], 3) if values else None,
+                "samples": len(values),
+            }
+    return {
+        "queues": counts, "oldest_active_at": oldest.isoformat() if oldest else None,
+        "active_jobs": sum(count for key, count in counts.items() if key.rsplit(":", 1)[-1] in active),
+        "tools": tool_metrics,
+    }
 
 
 @app.post("/workspaces")
@@ -322,10 +392,15 @@ def create_indexing_job(
     return {"job": job_payload(job), "deduplicated": False}
 
 
-def document_payload(document: Document, version: DocumentVersion) -> dict:
+def document_payload(document: Document, version: DocumentVersion, artifact: DocumentArtifact | None = None) -> dict:
     return {
         "id": document.id, "version_id": version.id, "name": document.display_name,
         "published_at": version.published_at.isoformat() if version.published_at else None,
+        "content_status": artifact.status if artifact else "pending",
+        "page_count": artifact.page_count if artifact and artifact.status == "ready" else 0,
+        "char_count": artifact.char_count if artifact and artifact.status == "ready" else 0,
+        "word_count": artifact.word_count if artifact and artifact.status == "ready" else 0,
+        "used_ocr": bool(artifact.used_ocr) if artifact and artifact.status == "ready" else False,
     }
 
 
@@ -345,10 +420,151 @@ def public_documents(
     rows = db.execute(
         query.order_by(Document.created_at.desc()).offset(offset).limit(limit + 1)
     ).all()
+    artifact_by_version = {
+        artifact.version_id: artifact for artifact in db.scalars(select(DocumentArtifact).where(
+            DocumentArtifact.version_id.in_([version.id for _, version in rows[:limit]])
+        )).all()
+    }
     return {
-        "documents": [document_payload(document, version) for document, version in rows[:limit]],
+        "documents": [document_payload(document, version, artifact_by_version.get(version.id)) for document, version in rows[:limit]],
         "next_offset": offset + limit if len(rows) > limit else None,
     }
+
+
+def public_ready_version(db: Session, version_id: str) -> tuple[Document, DocumentVersion, DocumentArtifact]:
+    row = db.execute(select(Document, DocumentVersion).join(
+        DocumentVersion, Document.current_version_id == DocumentVersion.id
+    ).where(
+        Document.published.is_(True), DocumentVersion.status == "completed", DocumentVersion.id == version_id
+    )).first()
+    if not row:
+        raise HTTPException(404, "Published document version not found")
+    document, version = row
+    artifact = db.get(DocumentArtifact, version_id)
+    if not artifact or artifact.status != "ready":
+        raise HTTPException(409, "document_not_ready")
+    return document, version, artifact
+
+
+@app.post("/tool-jobs")
+def create_tool_job(
+    payload: ToolJobRequest, owner: UserSession = Depends(owner_from_token), db: Session = Depends(db_session),
+) -> dict:
+    try:
+        options = validated_options(payload)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    admission_lock(db, "tools-capacity")
+    admission_lock(db, f"tools-owner:{owner.id}")
+    existing = db.scalar(select(ToolExecution).where(
+        ToolExecution.owner_id == owner.id, ToolExecution.request_id == payload.request_id
+    ))
+    request_identity = {
+        "tool_type": payload.tool_type, "document_version_id": payload.document_version_id,
+        "document_version_ids": payload.document_version_ids, "source_job_id": payload.source_job_id,
+        "input_text": payload.input_text,
+    }
+    input_hash, options_hash = canonical_hash(request_identity), canonical_hash(options)
+    if existing:
+        if existing.input_hash != input_hash or existing.options_hash != options_hash:
+            raise HTTPException(409, "This request id was already used with different input")
+        job = db.get(Job, existing.job_id)
+        return {"job": job_payload(job), "deduplicated": True}
+    queued = db.scalar(select(func.count()).select_from(Job).where(
+        Job.queue.in_(("tools", "tools-fast")), Job.status.in_(active_statuses())
+    )) or 0
+    if queued >= MAX_TOOL_QUEUE:
+        raise HTTPException(429, "Tool queue is full; retry shortly")
+    owned = db.scalar(select(func.count()).select_from(Job).where(
+        Job.owner_id == owner.id, Job.queue == "tools", Job.status.in_(active_statuses())
+    )) or 0
+    if owned >= MAX_OWNER_TOOL_JOBS:
+        raise HTTPException(429, "Your tool queue is full; retry after a running job completes")
+    version_ids = list(payload.document_version_ids)
+    if payload.document_version_id:
+        version_ids.append(payload.document_version_id)
+    artifacts_by_version: dict[str, DocumentArtifact] = {}
+    for version_id in dict.fromkeys(version_ids):
+        _, _, artifact = public_ready_version(db, version_id)
+        artifacts_by_version[version_id] = artifact
+    if payload.tool_type == "translation" and payload.document_version_id:
+        artifact = artifacts_by_version[payload.document_version_id]
+        requested_pages = [options[key] for key in ("page", "start_page", "end_page") if key in options]
+        if requested_pages and any(page > artifact.page_count for page in requested_pages):
+            raise HTTPException(422, "The selected page is outside the document")
+    if payload.tool_type == "web_analysis":
+        parent = db.get(ToolExecution, payload.source_job_id)
+        parent_job = db.get(Job, payload.source_job_id) if parent else None
+        if not parent or parent.owner_id != owner.id or parent.tool_type != "web_search" or not parent_job or parent_job.status != "completed":
+            raise HTTPException(409, "A completed private web search is required")
+    tool_queue = "tools-fast" if payload.tool_type == "web_search" or (
+        payload.tool_type == "entities" and options.get("method") == "fast"
+    ) else "tools"
+    job = Job(
+        id=str(uuid.uuid4()), owner_id=owner.id, type=f"tool_{payload.tool_type}", queue=tool_queue,
+        status="queued", progress=0, phase="queued", message="تم استلام الطلب.",
+        deadline_at=utcnow() + timedelta(seconds=TOOL_JOB_WAIT_SECONDS),
+        max_attempts=MAX_JOB_ATTEMPTS,
+        payload={
+            "tool_type": payload.tool_type, "document_version_id": payload.document_version_id,
+            "document_version_ids": payload.document_version_ids, "source_job_id": payload.source_job_id,
+            "input_text": payload.input_text, "options": options,
+        },
+    )
+    execution = ToolExecution(
+        job_id=job.id, owner_id=owner.id, request_id=payload.request_id, tool_type=payload.tool_type,
+        document_version_id=payload.document_version_id, input_hash=input_hash, options_hash=options_hash,
+        schema_version=f"{payload.tool_type}.v1", tool_revision=os.getenv("TOOL_REVISION", "tools-v1"),
+        model_revision=os.getenv("OPENROUTER_MODEL"),
+    )
+    db.add_all([
+        job, execution,
+        Outbox(id=str(uuid.uuid4()), job_id=job.id, task_name="backend.tasks.run_tool"),
+    ])
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(409, "A matching tool request is being registered; retry shortly") from exc
+    return {"job": job_payload(job), "deduplicated": False}
+
+
+def owned_tool_execution(db: Session, job_id: str, owner: UserSession) -> tuple[Job, ToolExecution]:
+    execution = db.get(ToolExecution, job_id)
+    job = db.get(Job, job_id)
+    if not execution or not job or execution.owner_id != owner.id:
+        raise HTTPException(404, "Tool job not found")
+    return job, execution
+
+
+@app.get("/tool-jobs/{job_id}/result")
+def get_tool_result(job_id: str, owner: UserSession = Depends(owner_from_token), db: Session = Depends(db_session)):
+    job, execution = owned_tool_execution(db, job_id, owner)
+    if job.status in active_statuses():
+        return JSONResponse(status_code=202, content=job_payload(job))
+    if job.status != "completed":
+        raise HTTPException(409, {"error_code": job.error_code or job.phase, "message": job.message})
+    try:
+        return read_tool_result(owner.id, job.id, execution.result_storage_key or "", execution.result_checksum or "")
+    except ArtifactError as exc:
+        raise HTTPException(409, {"error_code": "result_storage_failed", "message": "The saved result could not be verified."}) from exc
+
+
+@app.get("/tool-jobs/{job_id}/download")
+def download_tool_result(job_id: str, format: str = "json", owner: UserSession = Depends(owner_from_token), db: Session = Depends(db_session)):
+    job, execution = owned_tool_execution(db, job_id, owner)
+    if job.status != "completed":
+        raise HTTPException(409, "Tool result is not ready")
+    try:
+        result = read_tool_result(owner.id, job.id, execution.result_storage_key or "", execution.result_checksum or "")
+    except ArtifactError as exc:
+        raise HTTPException(409, "Tool result could not be verified") from exc
+    if format == "json":
+        return Response(json.dumps(result, ensure_ascii=False, indent=2), media_type="application/json", headers={"Content-Disposition": f'attachment; filename="{execution.tool_type}-{job.id}.json"'})
+    if format in {"txt", "md"} and isinstance(result.get("text"), str):
+        mime = "text/markdown" if format == "md" else "text/plain"
+        return Response(result["text"], media_type=mime, headers={"Content-Disposition": f'attachment; filename="{execution.tool_type}-{job.id}.{format}"'})
+    raise HTTPException(422, "This result does not support the requested download format")
 
 
 @app.get("/jobs/{job_id}")

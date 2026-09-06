@@ -22,6 +22,7 @@ WORKDIR /app
 
 # ── 3. نسخ requirements أولاً (cache layer) ──────────
 COPY requirements.txt .
+COPY requirements-dev.txt .
 
 # ── 4. تحديث pip وتثبيت PyTorch CPU ──────────────────
 RUN pip install --upgrade pip --no-cache-dir
@@ -30,7 +31,12 @@ RUN pip install --no-cache-dir torch \
     --index-url https://download.pytorch.org/whl/cpu
 
 # ── 5. تثبيت باقي المكتبات ───────────────────────────
-RUN pip install --no-cache-dir -r requirements.txt
+ARG INSTALL_DEV=false
+RUN if [ "$INSTALL_DEV" = "true" ]; then \
+      pip install --no-cache-dir -r requirements-dev.txt; \
+    else \
+      pip install --no-cache-dir -r requirements.txt; \
+    fi
 
 # ── 6. تحميل نموذج spaCy ─────────────────────────────
 RUN python -m spacy download xx_ent_wiki_sm
@@ -46,7 +52,10 @@ COPY app_optimized.py .
 COPY style.css .
 COPY dashboard.js .
 COPY platform_client.py .
+COPY platform_tools_ui.py .
 COPY backend ./backend
+COPY tests ./tests
+COPY scripts ./scripts
 COPY .streamlit/config.toml .streamlit/config.toml
 COPY redis_cache.py .
 COPY web_search.py .

@@ -43,6 +43,7 @@ cachetools>=5.3.3
 networkx>=3.2.1
 plotly>=5.19.0
 matplotlib>=3.8.3
+graphviz>=0.20.3
 
 # ===== NEW: Infrastructure Improvements =====
 # Redis Cache

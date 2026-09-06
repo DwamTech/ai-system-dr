@@ -31,6 +31,7 @@ services:
       OPENROUTER_APP_TITLE: ${OPENROUTER_APP_TITLE:-AI Conference Research Assistant}
       LLM_GATE_REDIS_URL: redis://task-redis:6379/1
       LLM_MAX_CONCURRENCY: ${LLM_MAX_CONCURRENCY:-2}
+      LLM_QUEUE_WAIT_SECONDS: ${LLM_QUEUE_WAIT_SECONDS:-180}
       TESSERACT_CMD: /usr/bin/tesseract
       STREAMLIT_SERVER_MAX_UPLOAD_SIZE: "25"
     depends_on:
@@ -46,6 +47,8 @@ services:
         condition: service_healthy
     networks:
       - nlp-network
+    mem_limit: ${STREAMLIT_MEMORY_LIMIT:-1g}
+    cpus: ${STREAMLIT_CPU_LIMIT:-1.5}
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8501/_stcore/health || exit 1"]
       interval: 30s
@@ -135,6 +138,13 @@ services:
       MAX_UPLOAD_BYTES: "26214400"
       MAX_INDEX_QUEUE: "30"
       MAX_GENERATION_QUEUE: "80"
+      MAX_TOOL_QUEUE: ${MAX_TOOL_QUEUE:-60}
+      MAX_OWNER_TOOL_JOBS: ${MAX_OWNER_TOOL_JOBS:-2}
+      TOOL_JOB_WAIT_SECONDS: ${TOOL_JOB_WAIT_SECONDS:-1800}
+      TOOL_SOFT_TIME_LIMIT: ${TOOL_SOFT_TIME_LIMIT:-3600}
+      TOOL_HARD_TIME_LIMIT: ${TOOL_HARD_TIME_LIMIT:-3660}
+      INDEX_SOFT_TIME_LIMIT: ${INDEX_SOFT_TIME_LIMIT:-3600}
+      INDEX_HARD_TIME_LIMIT: ${INDEX_HARD_TIME_LIMIT:-3660}
     depends_on:
       postgres:
         condition: service_healthy
@@ -190,7 +200,7 @@ services:
       embeddings:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "celery -A backend.celery_app.celery_app inspect ping --timeout=3 | grep -q pong"]
+      test: ["CMD-SHELL", "celery -A backend.celery_app.celery_app inspect ping -d index@$$(hostname) --timeout=3 | grep -q pong"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -214,13 +224,59 @@ services:
       embeddings:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "celery -A backend.celery_app.celery_app inspect ping --timeout=3 | grep -q pong"]
+      test: ["CMD-SHELL", "celery -A backend.celery_app.celery_app inspect ping -d generation@$$(hostname) --timeout=3 | grep -q pong"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 45s
     mem_limit: ${GENERATION_WORKER_MEMORY_LIMIT:-1g}
     cpus: ${GENERATION_WORKER_CPU_LIMIT:-1.5}
+    networks:
+      - nlp-network
+
+  tool-worker:
+    build: .
+    image: mysearchengine-app:latest
+    restart: unless-stopped
+    command: celery -A backend.celery_app.celery_app worker -Q tools -c 2 -l INFO --hostname=tools@%h
+    volumes:
+      - ./data:/app/data
+    environment: *platform-env
+    depends_on:
+      api:
+        condition: service_healthy
+      embeddings:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A backend.celery_app.celery_app inspect ping -d tools@$$(hostname) --timeout=3 | grep -q pong"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+    mem_limit: ${TOOL_WORKER_MEMORY_LIMIT:-1g}
+    cpus: ${TOOL_WORKER_CPU_LIMIT:-1.5}
+    networks:
+      - nlp-network
+
+  tool-fast-worker:
+    build: .
+    image: mysearchengine-app:latest
+    restart: unless-stopped
+    command: celery -A backend.celery_app.celery_app worker -Q tools-fast -c 1 -l INFO --hostname=tools-fast@%h
+    volumes:
+      - ./data:/app/data
+    environment: *platform-env
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A backend.celery_app.celery_app inspect ping -d tools-fast@$$(hostname) --timeout=3 | grep -q pong"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    mem_limit: ${TOOL_FAST_WORKER_MEMORY_LIMIT:-768m}
+    cpus: ${TOOL_FAST_WORKER_CPU_LIMIT:-0.75}
     networks:
       - nlp-network
 
@@ -241,6 +297,22 @@ services:
       start_period: 20s
     mem_limit: ${DISPATCHER_MEMORY_LIMIT:-256m}
     cpus: ${DISPATCHER_CPU_LIMIT:-0.5}
+    networks:
+      - nlp-network
+
+  test:
+    profiles: ["test"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        INSTALL_DEV: "true"
+    image: mysearchengine-test:latest
+    command: python scripts/verify_document_tools.py
+    environment:
+      PYTHONPATH: /app
+    volumes:
+      - ./:/app
     networks:
       - nlp-network
 

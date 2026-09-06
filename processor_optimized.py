@@ -22,6 +22,7 @@ class OptimizedDocumentProcessor:
         self.max_workers = max(1, min(int(os.getenv("OCR_MAX_WORKERS", "2")), os.cpu_count() or 1))
         self.ocr_page_batch = max(1, int(os.getenv("OCR_PAGE_BATCH", "2")))
         self.ocr_timeout = int(os.getenv("OCR_RENDER_TIMEOUT_SECONDS", "90"))
+        self.auto_ocr_sparse_pages = os.getenv("AUTO_OCR_SPARSE_PAGES", "true").lower() in {"1", "true", "yes"}
         self.reporter = reporter
 
     def _report(self, level, message):
@@ -38,13 +39,13 @@ class OptimizedDocumentProcessor:
             config += ' -c preserve_interword_spaces=1'
         return config
     
-    def _ocr_single_image_optimized(self, img, lang='ara'):
-        """OCR محسن للعربية فقط - أسرع بكثير من ara+eng"""
+    def _ocr_single_image_optimized(self, img, lang='ara+eng'):
+        """OCR ثنائي اللغة للملفات العربية والإنجليزية والمختلطة."""
         gray_img = ImageOps.grayscale(img)
         from PIL import ImageEnhance
         enhancer = ImageEnhance.Contrast(gray_img)
         gray_img = enhancer.enhance(1.5)
-        config = self._get_tesseract_config('ara')
+        config = self._get_tesseract_config('ara' if 'ara' in lang else lang)
         text = pytesseract.image_to_string(gray_img, lang=lang, config=config)
         return text
     
@@ -68,10 +69,34 @@ class OptimizedDocumentProcessor:
                 progress_callback("extract", 0, 1)
             loader = PyPDFLoader(file_path)
             documents = loader.load()
-            for doc in documents:
-                doc.metadata.update({"source": file_name, "type": "Digital Text", "processing_method": "direct_extraction"})
+            for page_number, doc in enumerate(documents, 1):
+                doc.metadata.update({
+                    "source": file_name, "type": "Digital Text",
+                    "processing_method": "direct_extraction", "page_number": page_number,
+                })
+                # A PDF may mix selectable text and scanned pages.  File-level
+                # detection alone used to leave those scanned pages blank and
+                # made downstream tools claim there was insufficient data.
+                if self.auto_ocr_sparse_pages and len(doc.page_content.strip()) < 20:
+                    images = []
+                    try:
+                        images = convert_from_path(
+                            file_path, dpi=self.ocr_dpi, thread_count=1, grayscale=True,
+                            first_page=page_number, last_page=page_number, timeout=self.ocr_timeout,
+                        )
+                        recovered = self._ocr_single_image_optimized(images[0]).strip() if images else ""
+                        if recovered:
+                            doc.page_content = recovered
+                            doc.metadata.update({"type": "Scanned", "processing_method": "ocr"})
+                    except Exception as exc:
+                        self._report("warning", f"تعذر فحص الصفحة {page_number} بالـ OCR: {exc}")
+                    finally:
+                        for image in images:
+                            image.close()
+                if progress_callback:
+                    progress_callback("ocr" if doc.metadata["processing_method"] == "ocr" else "extract", page_number, len(documents))
             if progress_callback:
-                progress_callback("extract", 1, 1)
+                progress_callback("extract", len(documents), len(documents))
             return documents
         except Exception as e:
             self._report("warning", f"فشل في معالجة PDF النصي: {e}")
@@ -97,24 +122,16 @@ class OptimizedDocumentProcessor:
                     image.close()
                 if progress_callback:
                     progress_callback("ocr", end, page_count)
-            full_text = "\n\n".join([f"## الصفحة {i+1}\n{text}" for i, text in enumerate(all_texts)])
-            return [Document(page_content=full_text, metadata={"source": file_name, "type": "Scanned", "processing_method": "ocr", "total_pages": page_count})]
-
-            images = convert_from_path(file_path, dpi=self.ocr_dpi, thread_count=2, grayscale=True)
-            if progress_callback:
-                progress_callback("ocr", 0, max(1, len(images)))
-            with ThreadPoolExecutor(max_workers=min(len(images), self.max_workers)) as executor:
-                batch_size = 8  # زيادة من 4 لتسريع OCR
-                all_texts = []
-                for i in range(0, len(images), batch_size):
-                    batch = images[i:i+batch_size]
-                    batch_results = list(executor.map(self._ocr_single_image_optimized, batch))
-                    all_texts.extend(batch_results)
-                    if progress_callback:
-                        progress_callback("ocr", min(i + len(batch), len(images)), max(1, len(images)))
-            full_text = "\n\n".join([f"## الصفحة {i+1}\n{text}" for i, text in enumerate(all_texts)])
-            document = Document(page_content=full_text, metadata={"source": file_name, "type": "Scanned", "processing_method": "ocr", "total_pages": len(images)})
-            return [document]
+            return [
+                Document(
+                    page_content=text.strip(),
+                    metadata={
+                        "source": file_name, "type": "Scanned", "processing_method": "ocr",
+                        "total_pages": page_count, "page_number": page_number,
+                    },
+                )
+                for page_number, text in enumerate(all_texts, 1)
+            ]
         except Exception as e:
             self._report("warning", f"فشل في معالجة PDF الممسوح: {e}")
             return []
@@ -131,11 +148,11 @@ class OptimizedDocumentProcessor:
             else:
                 is_text_based = self._has_selectable_text(tmp_path)
                 
-            pages = []  # قائمة نصوص الصفحات الفعلية
+            pages = []  # نص كل صفحة أصلية، بما فيها الصفحة الفارغة
             
             if is_text_based:
                 documents = self._process_digital_pdf(tmp_path, uploaded_file.name, progress_callback=progress_callback)
-                raw_text = "".join([doc.page_content for doc in documents])
+                raw_text = "\n\n".join(doc.page_content for doc in documents)
                 
                 # Smart OCR Fallback: فحص إذا كان النص المستخرج مشوهاً (طلاسم)
                 garbled_chars = sum(1 for c in raw_text if c.isalpha() and not c.isascii() and not ('\u0600' <= c <= '\u06FF'))
@@ -148,22 +165,16 @@ class OptimizedDocumentProcessor:
                 if is_garbled:
                     self._report("warning", f"⚠️ تم اكتشاف نص مشوه في الملف '{uploaded_file.name}'، جاري التحويل التلقائي للمعالجة بالـ OCR...")
                     documents = self._process_scanned_pdf(tmp_path, uploaded_file.name, progress_callback=progress_callback)
-                    raw_text = documents[0].page_content if documents else ""
-                    if raw_text:
-                        import re
-                        page_splits = re.split(r'## الصفحة \d+\n', raw_text)
-                        pages = [p.strip() for p in page_splits if p.strip()]
+                    raw_text = "\n\n".join(doc.page_content for doc in documents)
+                    pages = [doc.page_content.strip() for doc in documents]
                     used_ocr = True
                 else:
-                    pages = [doc.page_content for doc in documents if doc.page_content.strip()]
-                    used_ocr = False
+                    pages = [doc.page_content.strip() for doc in documents]
+                    used_ocr = any(doc.metadata.get("processing_method") == "ocr" for doc in documents)
             else:
                 documents = self._process_scanned_pdf(tmp_path, uploaded_file.name, progress_callback=progress_callback)
-                raw_text = documents[0].page_content if documents else ""
-                if raw_text:
-                    import re
-                    page_splits = re.split(r'## الصفحة \d+\n', raw_text)
-                    pages = [p.strip() for p in page_splits if p.strip()]
+                raw_text = "\n\n".join(doc.page_content for doc in documents)
+                pages = [doc.page_content.strip() for doc in documents]
                 used_ocr = True
                 
             chunks = self.text_splitter.split_documents(documents) if documents else []

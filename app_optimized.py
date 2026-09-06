@@ -33,6 +33,7 @@ from processor_optimized import OptimizedDocumentProcessor
 from engine_optimized import OptimizedRAGEngine
 from indexing_jobs import indexing_jobs
 from platform_client import PlatformClient, PlatformUnavailable
+from platform_tools_ui import render_platform_tools
 from utils import (
     get_scholar_link_cached,
     save_support_ticket_optimized,
@@ -2276,6 +2277,22 @@ with tab1:
     else:
         render_empty_state("science", "التحليل المتقدم", "ارفع مستنداً أو اختر مستنداً جاهزاً لتفعيل التحليل المتقدم.")
     advanced_panel.__exit__(None, None, None)
+
+# Platform mode renders all non-chat tools from durable API jobs.  The legacy
+# implementation below is retained only for a deliberately local workspace.
+if st.session_state.get("platform_available"):
+    try:
+        render_platform_tools(tab2, tab3, tab4, tab5, tab6, tab7, st.session_state.platform_client)
+    except PlatformUnavailable as exc:
+        with tab2:
+            st.error(f"تعذر الاتصال بمنصة الأدوات: {exc}")
+    with open(os.path.join(os.path.dirname(__file__), "dashboard.js"), encoding="utf-8") as dashboard_script:
+        st.html(f"<script>{dashboard_script.read()}</script>", unsafe_allow_javascript=True)
+    if st.session_state.get("workspace_cookie_to_set"):
+        safe_token = json.dumps(st.session_state.workspace_cookie_to_set)
+        st.html(f"<script>document.cookie='ai_conference_workspace='+encodeURIComponent({safe_token})+'; Path=/; Max-Age=2592000; SameSite=Strict';</script>", unsafe_allow_javascript=True)
+        del st.session_state.workspace_cookie_to_set
+    st.stop()
 
 # --- TAB 2: الملخص التلقائي ---
 with tab2:

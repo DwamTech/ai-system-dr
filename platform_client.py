@@ -28,6 +28,13 @@ class PlatformClient:
         return {"Authorization": f"Bearer {self.token}"}
 
     def _request(self, method: str, path: str, **kwargs) -> Any:
+        response = self._response(method, path, **kwargs)
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise PlatformUnavailable("Platform API returned an invalid JSON response") from exc
+
+    def _response(self, method: str, path: str, **kwargs) -> requests.Response:
         try:
             response = requests.request(
                 method, f"{self.base_url}{path}", headers=self.headers, timeout=(3, 20), **kwargs
@@ -41,7 +48,7 @@ class PlatformClient:
             except ValueError:
                 pass
             raise PlatformUnavailable(detail or f"Platform API returned {response.status_code}")
-        return response.json()
+        return response
 
     def ensure_workspace(self) -> dict:
         payload = {"token": self.token} if self.token else {}
@@ -62,8 +69,8 @@ class PlatformClient:
     def documents(self, q: str = "", offset: int = 0, limit: int = 100) -> dict:
         return self._request("GET", "/documents", params={"q": q, "offset": offset, "limit": limit})
 
-    def jobs(self) -> list[dict]:
-        return self._request("GET", "/jobs").get("jobs", [])
+    def jobs(self, limit: int = 100) -> list[dict]:
+        return self._request("GET", "/jobs", params={"limit": limit}).get("jobs", [])
 
     def conversations(self) -> list[dict]:
         return self._request("GET", "/conversations").get("conversations", [])
@@ -73,6 +80,20 @@ class PlatformClient:
 
     def cancel_job(self, job_id: str) -> dict:
         return self._request("POST", f"/jobs/{job_id}/cancel")
+
+    def create_tool_job(self, payload: dict[str, Any]) -> dict:
+        return self._request("POST", "/tool-jobs", json=payload)
+
+    def tool_result(self, job_id: str) -> dict:
+        return self._request("GET", f"/tool-jobs/{job_id}/result")
+
+    def download_tool_result(self, job_id: str, format: str = "json") -> tuple[bytes, str, str]:
+        response = self._response("GET", f"/tool-jobs/{job_id}/download", params={"format": format})
+        disposition = response.headers.get("content-disposition", "")
+        filename = f"tool-result.{format}"
+        if "filename=" in disposition:
+            filename = disposition.rsplit("filename=", 1)[1].strip('"')
+        return response.content, filename, response.headers.get("content-type", "application/octet-stream")
 
     def create_conversation(self) -> dict:
         return self._request("POST", "/conversations", json={})
