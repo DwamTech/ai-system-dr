@@ -3,7 +3,7 @@
 **التاريخ:** 2026-09-06  
 **الفرع:** `conference-v1`  
 **الحالة:** **READY_FOR_HUMAN_REVIEW**  
-**الصورة المختبرة:** `sha256:2c2b6c4e3e8dd3808858d70f53886c53c3ff58e9245b6252c8a7ec6203100779`
+**الصورة المختبرة:** `sha256:ceeecfe78cad870c77e2c96c6c285eb507acfc16061db2221eac1f46be248837`
 
 ## النتيجة
 
@@ -48,6 +48,7 @@
 | 10 مستخدمين، حمل مختلط على الصورة النهائية | PASS — 10/10؛ p50 = 31.38s، p95 = 139.53s؛ محادثتان وكل الأدوات الست غير المحادثة |
 | عزل النتائج | PASS — مستخدم آخر يحصل على 404، والأرشيف نفسه ظاهر للمساحات كلها |
 | Browser 1440/768/390/375 | PASS — 7 tabs، بلا overflow أفقي، page errors أو console errors |
+| تمرير الموبايل 390/375 | PASS — سحب لمسي حقيقي من داخل مساحة المستندات حرّك `stMain` من 0 إلى 345px، وتمرير العجلة إلى 420px؛ الاختبار كان يفشل قبل الإصلاح |
 | عرض الخريطة الذهنية | PASS — حزمة Graphviz 0.21 موجودة في صورة Streamlit، مع PyTorch 2.14 CPU وSentence Transformers 6.0.1 |
 | readiness | PASS — database/broker/storage و`generation,indexing,tools,tools-fast` |
 | image parity | PASS — API وStreamlit وكل العمال تعمل من digest واحد |

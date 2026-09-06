@@ -4525,3 +4525,36 @@ body:has(.empty-state--upload_file) .st-key-chat_composer_shell {
         line-height: 1.55;
     }
 }
+
+/* Mobile scroll ownership
+   The document rail is a nested desktop scroller. On mobile it becomes part of
+   the page, so keeping overscroll containment there traps every swipe that
+   starts on the rail and makes the whole application appear frozen. */
+@media (max-width: 768px) {
+    [data-testid="stMain"] {
+        overflow-y: auto !important;
+        overscroll-behavior-y: auto;
+        touch-action: pan-y;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .st-key-document_rail {
+        overflow: visible !important;
+        overscroll-behavior: auto !important;
+        touch-action: pan-y;
+    }
+
+    /* Fixed blur layers force full-screen repainting on mobile GPUs while the
+       page moves. The same surface remains fixed with a cheaper opaque fill. */
+    .st-key-chat_composer_shell {
+        -webkit-backdrop-filter: none !important;
+        backdrop-filter: none !important;
+        background: #f8f7f9;
+        box-shadow: 0 10px 28px rgba(38,29,46,.16), 0 0 0 3px rgba(239,237,241,.9);
+        contain: layout paint;
+    }
+
+    .stApp::before {
+        position: absolute;
+    }
+}

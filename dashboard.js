@@ -13,7 +13,8 @@
     let lastReadyToken = '';
     let followAnswer = true;
     const root = document.documentElement;
-    const visible = el => el && el.getClientRects().length && el.checkVisibility();
+    const visible = el => el && el.getClientRects().length &&
+        (typeof el.checkVisibility !== 'function' || el.checkVisibility());
     function reveal(el, block = 'end') {
         if (visible(el)) el.scrollIntoView({ block, behavior: 'instant' });
     }
@@ -31,8 +32,12 @@
             root.style.setProperty('--composer-reserve', reserve);
         }
         const viewport = window.visualViewport;
-        // Mobile keyboards can resize the visual viewport without changing dvh.
-        const inset = viewport && viewport.scale === 1
+        const focusedComposerInput = composer?.contains(document.activeElement) &&
+            document.activeElement?.matches('textarea,input,[contenteditable="true"]');
+        // Browser chrome also changes the visual viewport while the page is
+        // scrolling. Treat the difference as a keyboard only while the user is
+        // editing, otherwise a swipe causes a layout write on every frame.
+        const inset = focusedComposerInput && viewport && viewport.scale === 1
             ? Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop) : 0;
         root.style.setProperty('--keyboard-inset', `${Math.round(inset)}px`);
         const feed = document.querySelector('.st-key-chat_transcript');
@@ -42,7 +47,10 @@
         const newest = messages?.length ? messages[messages.length - 1] : null;
         const answer = newest?.textContent || '';
         if (user && user !== lastUser) followAnswer = true;
-        if (visible(feed) && followAnswer && user && (user !== lastUser || answer !== lastAnswer)) {
+        const mainScroller = document.querySelector('[data-testid="stMain"]');
+        const nearBottom = !mainScroller ||
+            mainScroller.scrollHeight - mainScroller.scrollTop - mainScroller.clientHeight < 180;
+        if (visible(feed) && followAnswer && nearBottom && user && (user !== lastUser || answer !== lastAnswer)) {
             reveal(newest);
             lastUser = user;
             lastAnswer = answer;
@@ -91,7 +99,8 @@
     observer.observe(document.body, { subtree: true, childList: true, characterData: true });
     window.addEventListener('resize', refresh, { passive: true });
     window.visualViewport?.addEventListener('resize', refresh, { passive: true });
-    window.visualViewport?.addEventListener('scroll', refresh, { passive: true });
+    // A visualViewport scroll is normal browser-chrome movement, not a keyboard
+    // resize. Listening to it caused repeated layout writes during mobile swipes.
     document.addEventListener('wheel', event => {
         if (event.deltaY < 0 && !event.target.closest('.st-key-document_rail')) followAnswer = false;
     }, { passive: true });
